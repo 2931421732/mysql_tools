@@ -643,7 +643,7 @@ func (s *Server) handleUploadBackground(w http.ResponseWriter, r *http.Request) 
 	defer file.Close()
 	ext := strings.ToLower(filepath.Ext(hdr.Filename))
 	switch ext {
-	case ".png", ".jpg", ".jpeg", ".webp":
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif":
 	default:
 		fail(w, http.StatusBadRequest, errors.New("only png, jpg, jpeg or webp images are supported"))
 		return
@@ -654,7 +654,7 @@ func (s *Server) handleUploadBackground(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// remove old background files
-	for _, old := range []string{"background.png", "background.jpg", "background.jpeg", "background.webp"} {
+	for _, old := range []string{"background.png", "background.jpg", "background.jpeg", "background.webp", "background.gif"} {
 		_ = os.Remove(filepath.Join(s.store.Home(), old))
 	}
 	name := "background" + ext
@@ -675,7 +675,7 @@ func (s *Server) handleClearBackground(w http.ResponseWriter, r *http.Request) {
 	if !requirePost(w, r) {
 		return
 	}
-	for _, old := range []string{"background.png", "background.jpg", "background.jpeg", "background.webp"} {
+	for _, old := range []string{"background.png", "background.jpg", "background.jpeg", "background.webp", "background.gif"} {
 		_ = os.Remove(filepath.Join(s.store.Home(), old))
 	}
 	settings := s.store.GetSettings()

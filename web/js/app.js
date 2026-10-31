@@ -2208,8 +2208,9 @@ async function openSettings(section = 'general') {
   const maxRows = h('input', { class: 'input', type: 'number', value: S.settings.maxRows });
 
   const bgPreview = h('div', { class: 'bg-preview' });
-  const bgFile = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' } });
-  const bgPick = h('button', { class: 'btn sm', onClick: () => bgFile.click() }, '上传图片');
+  const bgFile = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif', class: 'bg-file-input' });
+  const bgPick = h('label', { class: 'btn sm bg-pick' }, '上传图片', bgFile);
+  const bgHint = h('div', { class: 'hint' }, 'PNG / JPG / WebP / GIF · max 8 MB');
   const bgClear = h('button', { class: 'btn sm', onClick: async () => {
     try {
       await apiPost('/api/settings/background/clear', {});
@@ -2246,6 +2247,7 @@ async function openSettings(section = 'general') {
       applyBackground();
       toast('背景已更新', 'ok');
     } catch (err) { toast(err.message, 'err', 5000); }
+    finally { bgFile.value = ''; }
   });
 
   const general = h('div', { class: 'form-grid' },
@@ -2255,7 +2257,7 @@ async function openSettings(section = 'general') {
     field('编辑区字号', fontSize),
     field('每页行数', pageSize, '表数据浏览的默认分页大小'),
     field('查询最大行数', maxRows, '单次查询最多返回的行数'),
-    h('div', { class: 'field wide' }, h('label', {}, '背景图片'), bgPreview, h('div', { class: 'row gap-8' }, bgPick, bgClear, bgFile)),
+    h('div', { class: 'field wide' }, h('label', {}, '背景图片'), bgPreview, h('div', { class: 'row gap-8' }, bgPick, bgClear), bgHint),
   );
 
   const aiEnabled = h('input', { type: 'checkbox' });
