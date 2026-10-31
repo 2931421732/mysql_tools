@@ -757,3 +757,5 @@ body.has-bg #tabbar { background: color-mix(in srgb, var(--sidebar) 82%, transpa
 
 .bg-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
 .bg-pick { cursor: pointer; user-select: none; }
+
+.bg-preview.drag { border-color: var(--accent); background: var(--accent-dim); }

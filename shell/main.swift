@@ -1,7 +1,7 @@
 import Cocoa
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var server: Process?
@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         config.websiteDataStore = .default()
 
         webView = WKWebView(frame: .zero, configuration: config)
+        webView.uiDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
         if #available(macOS 12.0, *) {
             webView.underPageBackgroundColor = NSColor(calibratedRed: 0.07, green: 0.08, blue: 0.10, alpha: 1)
@@ -129,6 +130,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopServer()
+    }
+
+    // MARK: - WKUIDelegate
+
+    // WKWebView does not open a file picker on macOS without a UI delegate.
+    // This is what the Settings → Background image / file input relies on.
+    func webView(_ webView: WKWebView,
+                 runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.allowsOtherFileTypes = true
+        if let host = webView.window {
+            panel.beginSheetModal(for: host) { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        } else {
+            panel.begin { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        }
     }
 
     private func loadError(_ message: String) {

@@ -2210,7 +2210,9 @@ async function openSettings(section = 'general') {
   const bgPreview = h('div', { class: 'bg-preview' });
   const bgFile = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif', class: 'bg-file-input' });
   const bgPick = h('label', { class: 'btn sm bg-pick' }, '上传图片', bgFile);
-  const bgHint = h('div', { class: 'hint' }, 'PNG / JPG / WebP / GIF · max 8 MB');
+  const bgHint = h('div', { class: 'hint' }, getLang() === 'zh'
+    ? 'PNG / JPG / WebP / GIF · 最大 8 MB · 也可以把图片拖到这里'
+    : 'PNG / JPG / WebP / GIF · max 8 MB · or drag an image here');
   const bgClear = h('button', { class: 'btn sm', onClick: async () => {
     try {
       await apiPost('/api/settings/background/clear', {});
@@ -2230,8 +2232,7 @@ async function openSettings(section = 'general') {
     }
   };
   renderBg();
-  bgFile.addEventListener('change', async () => {
-    const file = bgFile.files && bgFile.files[0];
+  const uploadBg = async (file) => {
     if (!file) return;
     const fd = new FormData();
     fd.append('file', file);
@@ -2248,6 +2249,14 @@ async function openSettings(section = 'general') {
       toast('背景已更新', 'ok');
     } catch (err) { toast(err.message, 'err', 5000); }
     finally { bgFile.value = ''; }
+  };
+  bgFile.addEventListener('change', () => uploadBg(bgFile.files && bgFile.files[0]));
+  bgPreview.addEventListener('dragover', (e) => { e.preventDefault(); bgPreview.classList.add('drag'); });
+  bgPreview.addEventListener('dragleave', () => bgPreview.classList.remove('drag'));
+  bgPreview.addEventListener('drop', (e) => {
+    e.preventDefault();
+    bgPreview.classList.remove('drag');
+    uploadBg(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
   });
 
   const general = h('div', { class: 'form-grid' },
