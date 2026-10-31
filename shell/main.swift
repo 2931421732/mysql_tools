@@ -24,6 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.websiteDataStore = .default()
+        // The window uses .fullSizeContentView so the traffic-light buttons sit
+        // over the web content. Tell the SPA to reserve a top inset.
+        config.userContentController.addUserScript(WKUserScript(
+            source: "window.__NAVMINI_NATIVE__ = true;",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.uiDelegate = self

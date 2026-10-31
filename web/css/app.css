@@ -778,3 +778,9 @@ body.has-bg #tabbar { background: color-mix(in srgb, var(--sidebar) 68%, transpa
 .ai-attachment-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-attachment-meta { color: var(--text-faint); white-space: nowrap; }
 .ai-attachment .btn { padding: 0 5px; height: 20px; font-size: 10px; }
+
+/* macOS fullSizeContentView: keep the traffic lights off the app chrome */
+html.native-shell #app { padding-top: 30px; }
+html.native-shell .drawer { top: 30px; }
+html.native-shell .ai-panel { top: 30px; }
+html.native-shell .modal-overlay { padding-top: 50px; }
