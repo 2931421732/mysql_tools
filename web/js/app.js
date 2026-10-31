@@ -1643,7 +1643,7 @@ function exportQueryXLSX(tab, entry) {
   });
 }
 
-async function openImportWizard(tab) {
+async function openImportWizard(tab, preset = null) {
   if (!tab || tab.kind !== 'table') return;
   let upload = null;
   let preview = null;
@@ -1766,6 +1766,20 @@ async function openImportWizard(tab) {
     } catch (err) { toast(err.message, 'err', 8000); }
     finally { busy = false; importBtn.disabled = false; importBtn.textContent = old; }
   });
+
+  if (preset && preset.uploadId) {
+    upload = { uploadId: preset.uploadId, filename: preset.name || 'attachment.xlsx', sheets: preset.sheets || [] };
+    fileName.textContent = preset.name || 'attachment';
+    sheetSel.innerHTML = '';
+    for (const sh of upload.sheets) {
+      sheetSel.append(h('option', { value: sh.name }, `${sh.name}${sh.rows ? ` (${sh.rows} rows)` : ''}`));
+    }
+    sheet = preset.sheet || upload.sheets[0]?.name || '';
+    if (sheet) sheetSel.value = sheet;
+    sheetSel.disabled = false;
+    loadBtn.disabled = false;
+    setTimeout(loadPreview, 30);
+  }
 }
 
 async function exportTable(tab) {
@@ -2488,6 +2502,13 @@ async function openHistory() {
   openDrawer({ title: '查询历史', body });
 }
 
+function importAIAttachment(att, ctx) {
+  if (!att || !att.uploadId) { toast('该附件不是表格，无法导入', 'warn'); return; }
+  if (!ctx || !ctx.selectedTable) { toast('请先在表数据页打开目标表', 'warn'); return; }
+  const tab = openTable(ctx.connId, ctx.db || '', ctx.selectedTable);
+  openImportWizard(tab, att);
+}
+
 window.__navmini = {
   newQuery: () => newQueryFromContext(),
   newConnection: () => openConnectionDialog(),
@@ -2499,6 +2520,7 @@ window.__navmini = {
   about: () => openAbout(),
   openQuery: (connId, db, sql) => openQuery(connId, db, sql),
   askAI: (ctx) => openAssistant(ctx),
+  importAttachment: (att, ctx) => importAIAttachment(att, ctx),
 };
 
 init();

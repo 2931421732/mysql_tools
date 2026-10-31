@@ -127,7 +127,7 @@ const EN = {
   '单次查询最多返回的行数': 'Maximum rows returned per query',
   '生成后自动 EXPLAIN，提示全表扫描': 'Run EXPLAIN automatically and warn about full scans',
   '背景已更新': 'Background updated', '背景已移除': 'Background removed',
-  '已导出 Excel': 'Excel exported', '已导出 CSV': 'CSV exported', '已保存': 'Saved',
+  '已导出 Excel': 'Excel exported', '最多附加 3 个附件': 'Up to 3 attachments', '该附件不是表格，无法导入': 'This attachment is not tabular', '请先在表数据页打开目标表': 'Open a table first', '附件已添加': 'Attachment added', 'Attach file': 'Attach file', 'Import': 'Import', 'xlsx / csv / sql / text': 'xlsx / csv / sql / text', '已导出 CSV': 'CSV exported', '已保存': 'Saved',
   '预览': 'Preview', '— 跳过 —': '— Skip —',
   'DeepSeek 助手': 'DeepSeek Assistant', '默认只生成 SQL，执行前确认': 'Generates SQL only; review before running',
   '尚未配置 DeepSeek API Key。配置后即可生成 SQL。': 'DeepSeek API key is not configured. Add one to generate SQL.',

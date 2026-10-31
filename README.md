@@ -67,6 +67,8 @@ Why Go:
 - **Indexes first**: the schema context includes primary keys, unique keys, secondary indexes, and cardinality; generated SQL is automatically `EXPLAIN`ed, and a full table scan over 1000 rows raises a warning.
 - **Multiple databases**: select several databases in the panel; SQL must qualify tables as `db.table`, and the execution session has no default database.
 - **Value-driven**: right-click a table row → "have the AI modify this row" attaches the selected row; the model may issue at most 2 read-only probes (server-enforced LIMIT 50) before producing the final SQL.
+- **Attachments**: use the paperclip in the assistant to attach `.xlsx/.xlsm/.csv/.tsv/.txt/.sql/.md/.json` (max 20 MB, up to 3). Tabular files are parsed into sheets/headers/preview and can be handed to the existing import wizard for the currently open table; text/SQL files are added as bounded, untrusted context. Attachments are sent to the configured DeepSeek endpoint — do not attach sensitive data you do not want to share.
+- **Attachment safety**: attachment text is marked untrusted in the prompt; the assistant must not follow instructions found inside attachments, and still only proposes SQL (never executes it).
 - **UX**: dark/light themes, resizable sidebar and editor area, native window, `⌘T` / `⌘N` / `⌘W` / `⌘K` shortcuts.
 
 | Data browsing | SQL workbench |

@@ -1,5 +1,5 @@
-import { apiGet, apiPost } from './api.js';
-import { h, toast, openModal, copyText, escapeHtml, formatNumber } from './dom.js';
+import { apiGet, apiPost, TOKEN } from './api.js';
+import { h, toast, openModal, copyText, escapeHtml, formatNumber, formatBytes } from './dom.js';
 import { icon } from './icons.js';
 import { Grid } from './grid.js';
 import { tr } from './i18n.js';
@@ -23,7 +23,7 @@ export async function openAssistant(ctx = {}) {
   const panel = buildPanel(ctx);
   live = {
     panel, ctx, connId: ctx.connId, sessionId: null, state: null, databases: [],
-    selectedDbs: new Set(), history: [], busy: false, last: null,
+    selectedDbs: new Set(), history: [], attachments: [], busy: false, last: null,
   };
   document.body.append(panel);
   renderRowContext();
@@ -55,18 +55,80 @@ function buildPanel(ctx) {
   const messages = h('div', { class: 'ai-messages' });
   const rowCtx = h('div', { class: 'ai-row-ctx hidden' });
   const input = h('textarea', { class: 'ai-input', placeholder: '描述你想查或改什么，例如：按国家统计客户数与余额，按余额倒序', spellcheck: 'false' });
+  const attachInput = h('input', {
+    type: 'file', class: 'ai-file-input',
+    accept: '.xlsx,.xlsm,.csv,.tsv,.txt,.sql,.md,.markdown,.json,.log',
+  });
+  const attachBtn = h('label', { class: 'btn ghost sm icon ai-attach', title: 'Attach file', html: icon('paperclip') }, attachInput);
+  const attachmentsBox = h('div', { class: 'ai-attachments hidden' });
   const sendBtn = h('button', { class: 'btn primary sm', html: icon('play') + '<span>发送</span>' });
-  const composer = h('div', { class: 'ai-compose' }, rowCtx, input,
-    h('div', { class: 'ai-compose-bar' }, h('span', { class: 'faint' }, '⌘↩ 发送'), h('span', { class: 'flex-1' }), sendBtn));
+  const composer = h('div', { class: 'ai-compose' }, rowCtx, attachmentsBox, input,
+    h('div', { class: 'ai-compose-bar' },
+      attachBtn,
+      h('span', { class: 'faint ai-attach-hint' }, 'xlsx / csv / sql / text'),
+      h('span', { class: 'flex-1' }), h('span', { class: 'faint' }, '⌘↩ 发送'), sendBtn));
   panel.append(head, notice, scopeBox, messages, composer);
-  panel._ui = { modeBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn };
+  panel._ui = { modeBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn, attachInput, attachBtn, attachmentsBox };
   closeBtn.addEventListener('click', closeAssistant);
   settingsBtn.addEventListener('click', () => (window.__navmini?.openSettings?.('ai') || openAISettings()));
   sendBtn.addEventListener('click', () => sendMessage());
+  attachInput.addEventListener('change', () => {
+    const file = attachInput.files && attachInput.files[0];
+    if (file) uploadAttachment(file);
+    attachInput.value = '';
+  });
   input.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendMessage(); }
   });
   return panel;
+}
+
+function renderAttachments() {
+  if (!live) return;
+  const box = live.panel._ui.attachmentsBox;
+  box.innerHTML = '';
+  if (!live.attachments.length) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  for (const att of live.attachments) {
+    const meta = att.kind === 'table'
+      ? `${att.sheets?.length || 1} sheet${(att.sheets?.length || 1) > 1 ? 's' : ''} · ${att.rowCount || 0} rows`
+      : formatBytes(att.size || 0);
+    const chip = h('div', { class: 'ai-attachment' },
+      h('span', { class: 'ai-attachment-icon', html: icon(att.kind === 'table' ? 'table' : 'file') }),
+      h('span', { class: 'ai-attachment-name', title: att.name }, att.name),
+      h('span', { class: 'ai-attachment-meta' }, meta),
+    );
+    if (att.kind === 'table') {
+      const imp = h('button', { class: 'btn sm', title: live.ctx.selectedTable ? 'Import into selected table' : 'Open a table first' }, 'Import');
+      imp.disabled = !live.ctx.selectedTable;
+      imp.addEventListener('click', () => window.__navmini?.importAttachment?.(att, live.ctx));
+      chip.append(imp);
+    }
+    const rm = h('button', { class: 'btn ghost sm icon', title: 'Remove', html: icon('x') });
+    rm.addEventListener('click', () => {
+      live.attachments = live.attachments.filter((x) => x.id !== att.id);
+      renderAttachments();
+    });
+    chip.append(rm);
+    box.append(chip);
+  }
+}
+
+async function uploadAttachment(file) {
+  if (!live) return;
+  if (live.attachments.length >= 3) { toast('最多附加 3 个附件', 'warn', 3000); return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/api/ai/attachment', {
+      method: 'POST', headers: { 'X-NavMini-Token': TOKEN }, body: fd,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    live.attachments.push(data);
+    renderAttachments();
+    toast(tr('附件已添加'), 'ok', 2500);
+  } catch (err) { toast(err.message, 'err', 6000); }
 }
 
 async function bootstrap() {
@@ -273,6 +335,7 @@ async function sendMessage() {
       databases: [...live.selectedDbs],
       currentDatabase: firstDb(),
       messages: live.history.map((m) => ({ role: m.role, content: m.content })),
+      attachments: (live.attachments || []).map((a) => a.id),
     };
     if (live.ctx.selectedRow) {
       payload.selectedRow = live.ctx.selectedRow;

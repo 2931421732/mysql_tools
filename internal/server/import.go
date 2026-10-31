@@ -47,8 +47,12 @@ func importID() string {
 }
 
 func (s *importStore) put(data []byte, name string) (string, error) {
+	return s.putExt(data, name, ".xlsx")
+}
+
+func (s *importStore) putExt(data []byte, name, ext string) (string, error) {
 	id := importID()
-	p := filepath.Join(s.dir, id+".xlsx")
+	p := filepath.Join(s.dir, id+ext)
 	if err := os.WriteFile(p, data, 0o600); err != nil {
 		return "", err
 	}

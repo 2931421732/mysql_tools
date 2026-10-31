@@ -766,3 +766,15 @@ body.has-bg #tabbar { background: color-mix(in srgb, var(--sidebar) 68%, transpa
 .bg-pick { cursor: pointer; user-select: none; }
 
 .bg-preview.drag { border-color: var(--accent); background: var(--accent-dim); }
+
+/* AI attachments */
+.ai-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+.ai-attach { cursor: pointer; user-select: none; }
+.ai-attach-hint { margin-left: 2px; font-size: 10px; }
+.ai-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 0; }
+.ai-attachment { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 6px 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-soft); font-size: 11px; }
+.ai-attachment-icon { display: inline-flex; color: var(--accent); }
+.ai-attachment-icon svg { width: 13px; height: 13px; }
+.ai-attachment-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-attachment-meta { color: var(--text-faint); white-space: nowrap; }
+.ai-attachment .btn { padding: 0 5px; height: 20px; font-size: 10px; }
