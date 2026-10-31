@@ -1,4 +1,5 @@
 import { icon } from './icons.js';
+import { tr, translateTree } from './i18n.js';
 
 export function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -18,9 +19,10 @@ function applyProps(el, props) {
         break;
       case 'html':
         el.innerHTML = value;
+        translateTree(el);
         break;
       case 'text':
-        el.textContent = value;
+        el.textContent = tr(value);
         break;
       case 'style':
         if (typeof value === 'string') el.style.cssText = value;
@@ -40,7 +42,7 @@ function applyProps(el, props) {
         } else if (value === false) {
           el.removeAttribute(key);
         } else {
-          el.setAttribute(key, value);
+          el.setAttribute(key, ['title', 'placeholder', 'aria-label'].includes(key) ? tr(value) : value);
         }
     }
   }
@@ -49,7 +51,10 @@ function applyProps(el, props) {
 function append(el, children) {
   for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
-    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    if (child instanceof Node) { el.append(child); continue; }
+    const text = String(child);
+    const skip = ['PRE', 'CODE', 'TEXTAREA'].includes(el.tagName) || /(^|\s)(gc|grid|sql|mono|editor|code)(\s|$)/.test(el.className || '');
+    el.append(document.createTextNode(skip ? text : tr(text)));
   }
 }
 
@@ -66,7 +71,7 @@ export function toast(message, type = 'info', timeout = 3800) {
   const icons = { ok: 'check', err: 'alert', info: 'info', warn: 'alert' };
   const el = h('div', { class: `toast ${type}` },
     h('span', { html: icon(icons[type] || 'info'), style: { color: type === 'err' ? 'var(--red)' : type === 'ok' ? 'var(--accent)' : 'var(--text-dim)' } }),
-    h('div', { class: 'msg' }, message),
+    h('div', { class: 'msg' }, tr(message)),
   );
   host.append(el);
   const remove = () => {
@@ -86,8 +91,8 @@ export function openModal({ title, subtitle = '', body = null, wide = false, onC
   const overlay = h('div', { class: 'modal-overlay' });
   const closeBtn = h('button', { class: 'btn ghost icon', title: '关闭 (Esc)', html: icon('x') });
   const head = h('div', { class: 'modal-head' },
-    h('h3', {}, title),
-    subtitle ? h('span', { class: 'sub' }, subtitle) : null,
+    h('h3', {}, tr(title)),
+    subtitle ? h('span', { class: 'sub' }, tr(subtitle)) : null,
     closeBtn,
   );
   const bodyEl = h('div', { class: 'modal-body' });
@@ -192,7 +197,7 @@ export function openDrawer({ title, body, onClose }) {
   const overlay = h('div', { class: 'drawer-overlay' });
   const drawer = h('div', { class: 'drawer' },
     h('div', { class: 'drawer-head' },
-      h('h3', {}, title),
+      h('h3', {}, tr(title)),
       h('span', { class: 'flex-1' }),
       h('button', { class: 'btn ghost icon', html: icon('x'), onClick: () => closeDrawer() }),
     ),

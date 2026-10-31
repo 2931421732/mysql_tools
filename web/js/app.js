@@ -7,13 +7,14 @@ import { icon } from './icons.js';
 import { Grid, gridToCSV } from './grid.js';
 import { SQLEditor } from './editor.js';
 import { openAssistant } from './ai.js';
+import { setLang, getLang, translateTree } from './i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 
 const S = {
   version: VERSION,
   connections: [],
-  settings: { theme: 'dark', pageSize: 200, maxRows: 1000, fontSize: 13 },
+  settings: { theme: 'dark', language: 'en', pageSize: 200, maxRows: 1000, fontSize: 13, fontFamily: 'system', background: '' },
   tabs: [],
   activeId: null,
   seq: 0,
@@ -44,14 +45,21 @@ async function init() {
     const state = await apiGet('/api/state');
     S.connections = state.connections || [];
     S.settings = Object.assign(S.settings, state.settings || {});
+    setLang(S.settings.language || 'en');
     applyTheme(S.settings.theme);
+    applyFontSettings();
+    applyBackground();
     document.getElementById('version-chip').textContent = 'v' + (state.app?.version || VERSION);
   } catch (err) {
+    setLang('en');
     toast('无法连接 NavMini 服务：' + err.message, 'err', 8000);
   }
+  translateTree(document.body);
   renderTree();
   openWelcome();
+  translateTree(document.body);
   bindShortcuts();
+  window.__navmini.openSettings = openSettings;
 }
 
 function bindStaticIcons() {
@@ -74,9 +82,32 @@ function bindChrome() {
   $('#btn-about').addEventListener('click', openAbout);
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-history').addEventListener('click', openHistory);
+  $('#btn-saved').addEventListener('click', () => openSavedQueries());
   $('#btn-theme').addEventListener('click', toggleTheme);
   $('#tree-search').addEventListener('input', debounce((e) => { S.search = e.target.value.trim(); renderTree(); }, 120));
   bindSidebarResize();
+}
+
+function applyFontSettings() {
+  const family = S.settings.fontFamily || 'system';
+  const ui = family === 'mono'
+    ? 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+    : family === 'serif'
+      ? 'Georgia, "Times New Roman", "Songti SC", serif'
+      : '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif';
+  document.documentElement.style.setProperty('--ui', ui);
+  for (const tab of S.tabs) if (tab.editor) applyEditorFont(tab.editor);
+}
+
+function applyBackground() {
+  const bg = S.settings.background || '';
+  if (bg) {
+    document.body.style.setProperty('--bg-image', `url("/api/background?v=${encodeURIComponent(bg)}")`);
+    document.body.classList.add('has-bg');
+  } else {
+    document.body.style.removeProperty('--bg-image');
+    document.body.classList.remove('has-bg');
+  }
 }
 
 function applyTheme(theme) {
@@ -101,7 +132,7 @@ function connById(id) { return S.connections.find((c) => c.id === id); }
 function connState(id) {
   if (!S.conns.has(id)) {
     S.conns.set(id, {
-      sessionId: null, server: null, databases: null, objects: new Map(),
+      sessionId: null, connected: false, server: null, databases: null, objects: new Map(),
       openDbs: new Set(), expanded: false, loading: false, opening: null, error: null,
     });
   }
@@ -118,6 +149,7 @@ async function ensureTreeSession(connId) {
   if (!cs.opening) {
     cs.opening = openSession(connId).then((v) => {
       cs.sessionId = v.id;
+      cs.connected = true;
       cs.server = v.server;
       return v.id;
     }).finally(() => { cs.opening = null; });
@@ -131,6 +163,9 @@ async function ensureTabSession(tab) {
   tab.opening = openSession(tab.connId).then((v) => {
     tab.sessionId = v.id;
     tab.server = v.server;
+    const cs = connState(tab.connId);
+    cs.connected = true;
+    renderTree();
     return v.id;
   }).finally(() => { tab.opening = null; });
   return tab.opening;
@@ -216,9 +251,10 @@ function renderConnNode(conn, cs, q, connHit) {
   const node = h('div', { class: 'tree-node' });
   const open = cs.expanded || (q && connHit);
   const caret = h('span', { class: 'node-caret' + (open ? ' open' : ''), html: icon('chevron-right') });
-  const row = h('div', { class: 'node-row', style: { '--depth': 0 }, title: `${conn.user}@${conn.host}:${conn.port}` },
+  const connected = !!(cs.connected || cs.sessionId);
+  const row = h('div', { class: 'node-row ' + (connected ? 'conn-on' : 'conn-off'), style: { '--depth': 0 }, title: `${conn.user}@${conn.host}:${conn.port}` },
     caret,
-    h('span', { class: 'node-icon conn', html: icon('database') }),
+    h('span', { class: 'node-icon conn ' + (connected ? 'connected' : 'disconnected'), html: icon('database') }),
     h('span', { class: 'node-name' }, conn.name),
     h('span', { class: 'node-meta' }, cs.databases ? `${cs.databases.length} 个库` : (cs.server ? '已连接' : '')),
     h('span', { class: 'row-actions' },
@@ -496,7 +532,7 @@ function renderWelcome(tab) {
       h('div', { class: 'welcome-logo' }),
       h('div', {},
         h('h1', { class: 'welcome-title' }, 'NavMini'),
-        h('p', { class: 'welcome-sub' }, '一个受 Navicat 启发的轻量 MySQL 工作台 · Go + 原生 WebView'),
+        h('p', { class: 'welcome-sub' }, '一个受某软件启发的轻量 MySQL 工作台 · Go + 原生 WebView'),
       ),
     ),
   );
@@ -596,6 +632,8 @@ function buildQueryTab(tab, initialSQL) {
     dbSel,
     h('span', { class: 'spacer' }),
     runBtn, runSelBtn, stopBtn, explainBtn,
+    h('button', { class: 'btn sm', onClick: () => saveCurrentQuery(tab) }, '保存'),
+    h('button', { class: 'btn sm', onClick: () => openSavedQueries(tab.connId) }, '已保存'),
     h('span', { class: 'spacer' }),
     h('span', { class: 'faint', style: { fontSize: '11px' } }, '最大行数'), limitSel,
   );
@@ -660,8 +698,15 @@ function buildQueryTab(tab, initialSQL) {
 
 function applyEditorFont(editor) {
   const size = S.settings.fontSize || 13;
+  const family = S.settings.fontFamily === 'serif'
+    ? 'Georgia, "Times New Roman", serif'
+    : S.settings.fontFamily === 'mono'
+      ? 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+      : 'var(--mono)';
   editor.ta.style.fontSize = size + 'px';
   editor.pre.style.fontSize = size + 'px';
+  editor.ta.style.fontFamily = family;
+  editor.pre.style.fontFamily = family;
   editor.ta.style.lineHeight = '1.55';
   editor.pre.style.lineHeight = '1.55';
 }
@@ -758,6 +803,7 @@ function renderQueryResults(tab) {
   const entry = entries[tab.activeResult];
   if (!entry) return;
   if (entry.kind === 'grid') {
+    tabsEl.append(h('button', { class: 'btn sm', style: { marginLeft: '8px' }, title: 'Export Excel', html: icon('download') + '<span>Excel</span>', onClick: () => exportQueryXLSX(tab, entry) }));
     const host = h('div', { style: { flex: '1', minHeight: '0' } });
     bodyEl.append(host);
     const grid = new Grid(host, { sortable: false, emptyText: '查询没有返回数据' });
@@ -975,8 +1021,9 @@ function renderTableActions(tab) {
   host.innerHTML = '';
   const isView = tab.detail?.type === 'VIEW' || tab.rowsData?.type === 'VIEW';
   const refresh = h('button', { class: 'btn ghost sm icon', title: '刷新', html: icon('refresh'), onClick: () => { loadTableDetail(tab); loadTableRows(tab); } });
-  const exportBtn = h('button', { class: 'btn sm', title: '导出 CSV', html: icon('download') + '<span>导出</span>', onClick: () => exportTable(tab) });
-  host.append(refresh, exportBtn);
+  const exportBtn = h('button', { class: 'btn sm', title: '导出 CSV', html: icon('download') + '<span>CSV</span>', onClick: () => exportTable(tab) });
+  const xlsxBtn = h('button', { class: 'btn sm', title: '导出 Excel', html: icon('download') + '<span>Excel</span>', onClick: () => exportTableXLSX(tab) });
+  host.append(refresh, exportBtn, xlsxBtn);
   if (!isView) {
     host.append(
       h('button', { class: 'btn sm', title: '插入行', html: icon('plus') + '<span>插入</span>', onClick: () => addRowDialog(tab) }),
@@ -985,6 +1032,7 @@ function renderTableActions(tab) {
         if (row < 0) { toast('请先选择一行', 'warn'); return; }
         generateRowSQL(tab, row, 'insert');
       } }),
+      h('button', { class: 'btn sm', title: '导入 Excel', html: icon('upload') + '<span>导入</span>', onClick: () => openImportWizard(tab) }),
       h('button', { class: 'btn sm', title: '删除选中行', html: icon('trash'), onClick: () => deleteSelectedRow(tab) }),
     );
   }
@@ -1394,6 +1442,23 @@ async function withConnSession(connId, fn) {
   }
 }
 
+async function exportTableFromTreeXLSX(connId, db, table) {
+  try {
+    await withConnSession(connId, async (sid) => {
+      xlsxExportDialog({
+        title: '导出 Excel',
+        sql: `SELECT * FROM \`${db}\`.\`${table}\``,
+        onConfirm: async (includeSQL) => {
+          try {
+            await postXLSX({ kind: 'table', session: sid, database: db, table, includeSQL }, `${db}.${table}.xlsx`);
+            toast('已导出 Excel', 'ok');
+          } catch (err) { toast(err.message, 'err', 6000); }
+        },
+      });
+    });
+  } catch (err) { toast(err.message, 'err', 6000); }
+}
+
 async function exportTableFromTree(connId, db, table) {
   try {
     await withConnSession(connId, async (sid) => {
@@ -1511,6 +1576,193 @@ async function addRowDialog(tab) {
   });
   m.footer.append(h('span', { class: 'spacer' }), cancel, save);
   setTimeout(() => form.querySelector('input')?.focus(), 50);
+}
+
+function xlsxExportDialog({ title, sql, onConfirm }) {
+  const include = h('input', { type: 'checkbox' });
+  const body = h('div', {},
+    h('p', { class: 'modal-msg' }, 'The first sheet contains column headers and data. DATETIME/TIMESTAMP/DATE/TIME values are written as text.'),
+    sql ? h('pre', { class: 'sql-preview' }, sql) : null,
+    h('label', { class: 'check', style: { marginTop: '12px' } }, include, h('span', {}, 'Also export the query SQL to a separate sheet')),
+  );
+  const m = openModal({ title, body, wide: true });
+  const run = h('button', { class: 'btn primary' }, 'Export');
+  run.addEventListener('click', () => { m.close(); onConfirm(include.checked); });
+  m.footer.append(h('span', { class: 'spacer' }), h('button', { class: 'btn', onClick: () => m.close() }, '取消'), run);
+}
+
+async function postXLSX(payload, filename) {
+  const res = await fetch('/api/export/xlsx', {
+    method: 'POST',
+    headers: { 'X-NavMini-Token': TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  downloadBlob(await res.blob(), filename);
+}
+
+async function exportTableXLSX(tab) {
+  const sid = await ensureTabSession(tab);
+  xlsxExportDialog({
+    title: '导出 Excel',
+    sql: `SELECT * FROM \`${tab.db}\`.\`${tab.table}\``,
+    onConfirm: async (includeSQL) => {
+      try {
+        await postXLSX({
+          kind: 'table', session: sid, database: tab.db, table: tab.table,
+          orderBy: tab.order, filters: tab.filters, includeSQL,
+        }, `${tab.db}.${tab.table}.xlsx`);
+        toast('已导出 Excel', 'ok');
+      } catch (err) { toast(err.message, 'err', 6000); }
+    },
+  });
+}
+
+function exportQueryXLSX(tab, entry) {
+  if (!entry || !entry.rs) return;
+  const rs = entry.rs;
+  if (!rs.columns?.length) { toast('没有可导出的数据', 'warn'); return; }
+  xlsxExportDialog({
+    title: '导出 Excel',
+    sql: rs.statement || tab.sql,
+    onConfirm: async (includeSQL) => {
+      try {
+        await postXLSX({
+          kind: 'result', columns: rs.columns, rows: rs.rows, sql: rs.statement || tab.sql, includeSQL,
+        }, `query-${rs.index || 1}.xlsx`);
+        toast('已导出 Excel', 'ok');
+      } catch (err) { toast(err.message, 'err', 6000); }
+    },
+  });
+}
+
+async function openImportWizard(tab) {
+  if (!tab || tab.kind !== 'table') return;
+  let upload = null;
+  let preview = null;
+  let mapping = {};
+  let headerRow = 1;
+  let sheet = '';
+  let busy = false;
+
+  const fileInput = h('input', { type: 'file', accept: '.xlsx,.xlsm', style: { display: 'none' } });
+  const fileBtn = h('button', { class: 'btn sm' }, '选择 Excel 文件');
+  const fileName = h('span', { class: 'faint', style: { fontSize: '11px' } }, 'No file selected');
+  const sheetSel = h('select', { class: 'input', disabled: true });
+  const headerInput = h('input', { class: 'input', type: 'number', min: 1, value: 1, style: { width: '90px' } });
+  const loadBtn = h('button', { class: 'btn sm', disabled: true }, '加载表头 / 预览');
+  const status = h('div', { class: 'faint', style: { fontSize: '11px', padding: '4px 0' } });
+  const mappingHost = h('div', { class: 'import-mapping' });
+  const importBtn = h('button', { class: 'btn primary', disabled: true }, '开始导入');
+
+  const m = openModal({ title: '导入 Excel', subtitle: `${tab.db}.${tab.table}`, body: h('div', {},
+    h('div', { class: 'row gap-8', style: { marginBottom: '10px' } }, fileBtn, fileName, fileInput),
+    h('div', { class: 'form-grid' },
+      field('工作表', sheetSel),
+      field('表头行', headerInput),
+    ),
+    h('div', { class: 'row gap-8', style: { margin: '4px 0 10px' } }, loadBtn, status),
+    mappingHost,
+  ), wide: true });
+  m.footer.append(h('span', { class: 'spacer' }), h('button', { class: 'btn', onClick: () => m.close() }, '取消'), importBtn);
+
+  const renderMapping = () => {
+    mappingHost.innerHTML = '';
+    if (!preview) return;
+    if (!preview.headers.length) {
+      mappingHost.append(h('div', { class: 'empty-state compact' }, h('h3', {}, '未读取到表头')));
+      return;
+    }
+    const cols = preview.columns || [];
+    const table = h('table', { class: 'mtable import-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, '源表头'), h('th', {}, '预览'), h('th', {}, '目标列'),
+      )));
+    const tbody = h('tbody');
+    preview.headers.forEach((header, i) => {
+      const sample = (preview.preview || []).map((r) => r[i]).filter((v) => v !== undefined && v !== '').slice(0, 2).join(' / ');
+      const sel = h('select', { class: 'input' }, h('option', { value: '' }, '— 跳过 —'));
+      for (const c of cols) {
+        const opt = h('option', { value: c.name }, `${c.name}  ·  ${c.columnType || c.dataType || ''}${c.nullable ? '' : ' · required'}`);
+        if (c.generated) opt.disabled = true;
+        sel.append(opt);
+      }
+      sel.value = mapping[String(i)] || '';
+      sel.addEventListener('change', () => {
+        if (sel.value) mapping[String(i)] = sel.value;
+        else delete mapping[String(i)];
+        importBtn.disabled = busy || !Object.keys(mapping).length;
+      });
+      tbody.append(h('tr', {},
+        h('td', {}, h('span', { class: 'mono' }, header || `Column ${i + 1}`)),
+        h('td', { class: 'faint', style: { maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: sample }, sample || '—'),
+        h('td', {}, sel),
+      ));
+    });
+    table.append(tbody);
+    mappingHost.append(table);
+    importBtn.disabled = busy || !Object.keys(mapping).length;
+  };
+
+  const loadPreview = async () => {
+    if (!upload || !sheet) return;
+    busy = true; loadBtn.disabled = true; status.textContent = '读取中…';
+    try {
+      const sid = await ensureTabSession(tab);
+      preview = await apiPost('/api/import/preview', {
+        uploadId: upload.uploadId, sheet, headerRow: Number(headerInput.value) || 1,
+        session: sid, database: tab.db, table: tab.table,
+      });
+      mapping = Object.assign({}, preview.mapping || {});
+      renderMapping();
+      status.textContent = `${preview.rowCount || 0} rows · ${preview.headers.length} columns`;
+    } catch (err) { status.textContent = ''; toast(err.message, 'err', 6000); }
+    finally { busy = false; loadBtn.disabled = false; importBtn.disabled = !Object.keys(mapping).length; }
+  };
+
+  fileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    fileName.textContent = `${file.name} · ${formatBytes(file.size)}`;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/import/upload', { method: 'POST', headers: { 'X-NavMini-Token': TOKEN }, body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      upload = data;
+      sheetSel.innerHTML = '';
+      for (const sh of data.sheets || []) {
+        sheetSel.append(h('option', { value: sh.name }, `${sh.name}${sh.rows ? ` (${sh.rows} rows)` : ''}`));
+      }
+      sheet = data.sheets?.[0]?.name || '';
+      sheetSel.disabled = false;
+      loadBtn.disabled = false;
+      await loadPreview();
+    } catch (err) { toast(err.message, 'err', 7000); }
+  });
+  sheetSel.addEventListener('change', () => { sheet = sheetSel.value; preview = null; mapping = {}; renderMapping(); });
+  loadBtn.addEventListener('click', loadPreview);
+  importBtn.addEventListener('click', async () => {
+    if (busy || !upload || !Object.keys(mapping).length) return;
+    busy = true; importBtn.disabled = true; const old = importBtn.textContent; importBtn.textContent = '导入中…';
+    try {
+      const sid = await ensureTabSession(tab);
+      const res = await apiPost('/api/import/execute', {
+        uploadId: upload.uploadId, sheet, headerRow: Number(headerInput.value) || 1,
+        session: sid, database: tab.db, table: tab.table, mapping,
+      });
+      toast(`已导入 ${res.inserted} 行（扫描 ${res.scanned}，${formatMs(res.durationMs)}）`, 'ok', 6000);
+      m.close();
+      loadTableRows(tab);
+    } catch (err) { toast(err.message, 'err', 8000); }
+    finally { busy = false; importBtn.disabled = false; importBtn.textContent = old; }
+  });
 }
 
 async function exportTable(tab) {
@@ -1930,55 +2182,253 @@ function field(label, input, hint) {
 /* settings / about / history                                         */
 /* ------------------------------------------------------------------ */
 
-function openSettings() {
-  const theme = h('select', { class: 'input' }, h('option', { value: 'dark' }, '深色'), h('option', { value: 'light' }, '浅色'));
+async function openSettings(section = 'general') {
+  if (typeof section !== 'string') section = 'general';
+  let ai = { enabled: false, baseURL: 'https://api.deepseek.com', model: 'deepseek-chat', permission: 'readonly', autoExplain: true, hasKey: false };
+  try { ai = Object.assign(ai, await apiGet('/api/ai/state')); } catch { /* keep defaults */ }
+
+  let lang = S.settings.language || 'en';
+  let bgName = S.settings.background || '';
+  let active = section === 'ai' ? 'ai' : 'general';
+
+  const language = h('select', { class: 'input' },
+    h('option', { value: 'en' }, 'English'), h('option', { value: 'zh' }, '中文'));
+  language.value = lang;
+  const theme = h('select', { class: 'input' },
+    h('option', { value: 'dark' }, '深色'), h('option', { value: 'light' }, '浅色'));
   theme.value = S.settings.theme;
+  const fontFamily = h('select', { class: 'input' },
+    h('option', { value: 'system' }, '系统'), h('option', { value: 'mono' }, '等宽'), h('option', { value: 'serif' }, '衬线'));
+  fontFamily.value = S.settings.fontFamily || 'system';
+  const fontSize = h('input', { class: 'input', type: 'number', min: 11, max: 24, value: S.settings.fontSize || 13 });
   const pageSize = h('input', { class: 'input', type: 'number', value: S.settings.pageSize });
   const maxRows = h('input', { class: 'input', type: 'number', value: S.settings.maxRows });
-  const fontSize = h('input', { class: 'input', type: 'number', value: S.settings.fontSize });
-  const form = h('div', { class: 'form-grid' },
-    field('主题', theme), field('编辑区字号', fontSize),
+
+  const bgPreview = h('div', { class: 'bg-preview' });
+  const bgFile = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' } });
+  const bgPick = h('button', { class: 'btn sm', onClick: () => bgFile.click() }, '上传图片');
+  const bgClear = h('button', { class: 'btn sm', onClick: async () => {
+    try {
+      await apiPost('/api/settings/background/clear', {});
+      bgName = '';
+      S.settings.background = '';
+      renderBg();
+      applyBackground();
+      toast('背景已移除', 'ok');
+    } catch (err) { toast(err.message, 'err', 5000); }
+  } }, '移除');
+  const renderBg = () => {
+    bgPreview.innerHTML = '';
+    if (bgName) {
+      bgPreview.append(h('img', { src: `/api/background?v=${encodeURIComponent(bgName)}`, alt: 'background' }));
+    } else {
+      bgPreview.append(h('span', { class: 'faint' }, 'No background image'));
+    }
+  };
+  renderBg();
+  bgFile.addEventListener('change', async () => {
+    const file = bgFile.files && bgFile.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/settings/background', {
+        method: 'POST', headers: { 'X-NavMini-Token': TOKEN }, body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      bgName = data.background;
+      S.settings.background = bgName;
+      renderBg();
+      applyBackground();
+      toast('背景已更新', 'ok');
+    } catch (err) { toast(err.message, 'err', 5000); }
+  });
+
+  const general = h('div', { class: 'form-grid' },
+    field('语言 / Language', language),
+    field('主题', theme),
+    field('界面字体', fontFamily),
+    field('编辑区字号', fontSize),
     field('每页行数', pageSize, '表数据浏览的默认分页大小'),
     field('查询最大行数', maxRows, '单次查询最多返回的行数'),
+    h('div', { class: 'field wide' }, h('label', {}, '背景图片'), bgPreview, h('div', { class: 'row gap-8' }, bgPick, bgClear, bgFile)),
   );
-  const m = openModal({ title: '设置', body: form });
+
+  const aiEnabled = h('input', { type: 'checkbox' });
+  aiEnabled.checked = !!ai.enabled;
+  const aiBase = h('input', { class: 'input', value: ai.baseURL || 'https://api.deepseek.com' });
+  const aiModel = h('input', { class: 'input', value: ai.model || 'deepseek-chat', placeholder: 'deepseek-chat' });
+  const aiKey = h('input', { class: 'input', type: 'password', placeholder: ai.hasKey ? '已保存，留空保持不变' : 'sk-…' });
+  const aiPermission = h('select', { class: 'input' },
+    h('option', { value: 'readonly' }, '只读（只能 SELECT / SHOW / EXPLAIN）'),
+    h('option', { value: 'modify' }, '可修改（允许 INSERT / UPDATE / REPLACE）'),
+    h('option', { value: 'delete' }, '可删除（允许 DELETE / DROP / ALTER 等）'));
+  aiPermission.value = ai.permission || 'readonly';
+  const aiExplain = h('input', { type: 'checkbox' });
+  aiExplain.checked = ai.autoExplain !== false;
+  const aiTest = h('button', { class: 'btn sm' }, '测试连接');
+  aiTest.addEventListener('click', async () => {
+    aiTest.disabled = true;
+    const old = aiTest.textContent;
+    aiTest.textContent = '测试中…';
+    try {
+      await apiPost('/api/ai/test', { baseURL: aiBase.value.trim(), model: aiModel.value.trim(), apiKey: aiKey.value });
+      toast('连接成功', 'ok');
+    } catch (err) { toast(err.message, 'err', 7000); }
+    finally { aiTest.disabled = false; aiTest.textContent = old; }
+  });
+  const aiForm = h('div', { class: 'form-grid' },
+    h('div', { class: 'field wide' }, h('label', { class: 'check' }, aiEnabled, h('span', {}, '启用助手'))),
+    field('Base URL', aiBase, 'OpenAI-compatible endpoint'),
+    field('模型', aiModel),
+    field('API Key', aiKey, '仅保存在服务端，使用 AES-256-GCM 加密；不会回传到浏览器。'),
+    field('权限模式', aiPermission, '权限在服务端强制校验；写操作仍需在弹窗中确认。'),
+    h('div', { class: 'field wide' }, h('label', { class: 'check' }, aiExplain, h('span', {}, '生成后自动 EXPLAIN，提示全表扫描'))),
+    h('div', { class: 'field wide' }, h('div', { class: 'row gap-8' }, aiTest)),
+  );
+
+  const content = h('div');
+  const tabBar = h('div', { class: 'settings-tabs' });
+  const generalBtn = h('button', { class: 'btn sm' }, '通用');
+  const aiBtn = h('button', { class: 'btn sm' }, 'DeepSeek');
+  const render = () => {
+    content.innerHTML = '';
+    content.append(active === 'ai' ? aiForm : general);
+    generalBtn.classList.toggle('primary', active === 'general');
+    aiBtn.classList.toggle('primary', active === 'ai');
+  };
+  generalBtn.addEventListener('click', () => { active = 'general'; render(); });
+  aiBtn.addEventListener('click', () => { active = 'ai'; render(); });
+  tabBar.append(generalBtn, aiBtn);
+  content.append(general);
+  const body = h('div', {}, tabBar, content);
+  const m = openModal({ title: '设置', subtitle: 'General · DeepSeek', body, wide: true });
+  render();
+
   const save = h('button', { class: 'btn primary' }, '保存');
   const cancel = h('button', { class: 'btn' }, '取消');
   cancel.addEventListener('click', () => m.close());
   save.addEventListener('click', async () => {
-    S.settings = {
-      theme: theme.value,
+    const nextLang = language.value === 'zh' ? 'zh' : 'en';
+    const changedLang = nextLang !== (S.settings.language || 'en');
+    S.settings = Object.assign({}, S.settings, {
+      language: nextLang,
+      theme: theme.value === 'light' ? 'light' : 'dark',
+      fontFamily: ['mono', 'serif'].includes(fontFamily.value) ? fontFamily.value : 'system',
+      fontSize: Math.max(11, Math.min(24, Number(fontSize.value) || 13)),
       pageSize: Math.max(10, Math.min(5000, Number(pageSize.value) || 200)),
       maxRows: Math.max(10, Math.min(100000, Number(maxRows.value) || 1000)),
-      fontSize: Math.max(11, Math.min(24, Number(fontSize.value) || 13)),
-    };
-    applyTheme(S.settings.theme);
-    for (const tab of S.tabs) if (tab.editor) applyEditorFont(tab.editor);
-    try { await apiPost('/api/settings', S.settings); toast('设置已保存', 'ok'); } catch (err) { toast(err.message, 'err', 5000); }
-    m.close();
+      background: bgName,
+    });
+    try {
+      await apiPost('/api/settings', S.settings);
+      await apiPost('/api/ai/config', {
+        enabled: aiEnabled.checked,
+        baseURL: aiBase.value.trim(),
+        model: aiModel.value.trim(),
+        permission: aiPermission.value,
+        autoExplain: aiExplain.checked,
+        apiKey: aiKey.value,
+      });
+      applyTheme(S.settings.theme);
+      applyFontSettings();
+      applyBackground();
+      window.dispatchEvent(new CustomEvent('navmini:ai-config'));
+      toast('设置已保存', 'ok');
+      m.close();
+      if (changedLang) { setLang(nextLang); setTimeout(() => location.reload(), 250); }
+    } catch (err) { toast(err.message, 'err', 6000); }
   });
   m.footer.append(h('span', { class: 'spacer' }), cancel, save);
 }
 
 function openAbout() {
+  const zh = getLang() === 'zh';
   const body = h('div');
   body.innerHTML = `
     <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px">
       <div class="welcome-logo" style="width:46px;height:46px"></div>
       <div><div style="font-size:18px;font-weight:650">NavMini</div>
-      <div class="faint" style="font-size:11.5px">v${escapeHtml(VERSION)} · 受 Navicat Premium 启发的 MySQL 工作台</div></div>
+      <div class="faint" style="font-size:11.5px">v${escapeHtml(VERSION)} · ${zh ? '轻量 MySQL 工作台' : 'a lightweight MySQL workbench'}</div></div>
     </div>
-    <p class="modal-msg">基于 REA 对 Navicat Premium Lite 17.3.10 的静态构造分析，把「原生外壳 + 核心服务 + 驱动层 + 模块化 UI」压缩为单进程 Go 服务 + WebView 界面。</p>
+    <p class="modal-msg">${zh
+      ? '基于 REA 对某软件 17.3.10 的静态构造分析，把「原生外壳 + 核心服务 + 驱动层 + 模块化 UI」压缩为单进程 Go 服务 + WebView 界面。'
+      : 'Inspired by a static-construction study of a certain database GUI 17.3.10, NavMini compresses the native shell + core service + driver layer + modular UI into a single Go process and a WebView front end.'}</p>
     <div class="kv-grid" style="margin-top:12px">
-      <div class="kv-row"><span class="k">后端</span><span class="v">Go · database/sql</span></div>
-      <div class="kv-row"><span class="k">驱动</span><span class="v">go-sql-driver/mysql</span></div>
-      <div class="kv-row"><span class="k">隧道</span><span class="v">golang.org/x/crypto/ssh</span></div>
-      <div class="kv-row"><span class="k">界面</span><span class="v">原生 WKWebView + 单页 UI</span></div>
-      <div class="kv-row"><span class="k">凭据</span><span class="v">AES-256-GCM 本地加密</span></div>
-      <div class="kv-row"><span class="k">分析报告</span><span class="v">docs/navicat-architecture.md</span></div>
+      <div class="kv-row"><span class="k">${zh ? '后端' : 'Backend'}</span><span class="v">Go · database/sql</span></div>
+      <div class="kv-row"><span class="k">${zh ? '驱动' : 'Driver'}</span><span class="v">go-sql-driver/mysql</span></div>
+      <div class="kv-row"><span class="k">${zh ? '隧道' : 'Tunnel'}</span><span class="v">golang.org/x/crypto/ssh</span></div>
+      <div class="kv-row"><span class="k">${zh ? '界面' : 'UI'}</span><span class="v">WKWebView + SPA</span></div>
+      <div class="kv-row"><span class="k">${zh ? '凭据' : 'Credentials'}</span><span class="v">AES-256-GCM</span></div>
+      <div class="kv-row"><span class="k">${zh ? '分析报告' : 'Architecture'}</span><span class="v">docs/software-architecture.md</span></div>
     </div>`;
   const m = openModal({ title: '关于 NavMini', body });
   m.footer.append(h('button', { class: 'btn primary', onClick: () => m.close() }, '关闭'));
+}
+
+function connEndpoint(conn) {
+  if (!conn) return '';
+  return `${conn.host || '127.0.0.1'}:${conn.port || 3306}`;
+}
+
+function saveCurrentQuery(tab) {
+  if (!tab || !tab.editor) return;
+  const sql = tab.editor.value.trim();
+  if (!sql) { toast('没有可执行的 SQL', 'warn'); return; }
+  const conn = connById(tab.connId);
+  if (!conn) { toast('连接不存在', 'err'); return; }
+  const name = h('input', { class: 'input', value: sql.split('\n')[0].slice(0, 60) || 'Query' });
+  const m = openModal({ title: '保存查询', body: h('div', { class: 'form-grid' }, field('名称', name)) });
+  const save = h('button', { class: 'btn primary' }, '保存');
+  save.addEventListener('click', async () => {
+    try {
+      await apiPost('/api/saved-queries/save', {
+        name: name.value.trim() || 'Query', sql, host: connEndpoint(conn), database: tab.db || '',
+      });
+      toast('已保存', 'ok'); m.close();
+    } catch (err) { toast(err.message, 'err', 5000); }
+  });
+  m.footer.append(h('span', { class: 'spacer' }), h('button', { class: 'btn', onClick: () => m.close() }, '取消'), save);
+}
+
+async function openSavedQueries(connId) {
+  const active = connId ? connById(connId) : (activeTab()?.connId ? connById(activeTab().connId) : null);
+  const host = active ? connEndpoint(active) : '';
+  let items = [];
+  try { items = await apiGet('/api/saved-queries' + (host ? `?host=${encodeURIComponent(host)}` : '')); }
+  catch (err) { toast(err.message, 'err', 5000); return; }
+  const body = h('div');
+  body.append(h('div', { class: 'faint', style: { fontSize: '11px', padding: '2px 4px 8px' } },
+    host ? `${host} · ${items.length}` : `${items.length}`));
+  if (!items.length) {
+    body.append(h('div', { class: 'empty-state compact' }, h('h3', {}, '还没有保存的查询')));
+  }
+  for (const item of items) {
+    const node = h('div', { class: 'history-item' },
+      h('div', { class: 'sql' }, item.sql),
+      h('div', { class: 'meta' },
+        h('span', {}, item.name),
+        item.database ? h('span', {}, item.database) : null,
+        h('span', { class: 'faint' }, item.host || ''),
+        h('span', { style: { marginLeft: 'auto' } }, timeAgo(item.updatedAt)),
+      ),
+    );
+    node.addEventListener('click', () => {
+      closeDrawer();
+      if (!active) { toast('没有可用连接', 'warn'); return; }
+      openQuery(active.id, item.database || '', item.sql);
+    });
+    const del = h('button', { class: 'btn ghost sm', title: '删除' }, '×');
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await apiPost('/api/saved-queries/delete', { id: item.id }); node.remove(); toast('已删除', 'ok'); }
+      catch (err) { toast(err.message, 'err', 5000); }
+    });
+    node.append(del);
+    body.append(node);
+  }
+  openDrawer({ title: '已保存查询', body });
 }
 
 async function openHistory() {
@@ -2030,6 +2480,7 @@ window.__navmini = {
   closeTab: () => { const t = activeTab(); if (t) closeTab(t.id); },
   run: () => { const t = activeTab(); if (t && t.kind === 'query') runQuery(t, false); },
   history: () => openHistory(),
+  savedQueries: (connId) => openSavedQueries(connId),
   settings: () => openSettings(),
   about: () => openAbout(),
   openQuery: (connId, db, sql) => openQuery(connId, db, sql),

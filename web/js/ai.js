@@ -2,6 +2,7 @@ import { apiGet, apiPost } from './api.js';
 import { h, toast, openModal, copyText, escapeHtml, formatNumber } from './dom.js';
 import { icon } from './icons.js';
 import { Grid } from './grid.js';
+import { tr } from './i18n.js';
 
 let live = null;
 
@@ -60,7 +61,7 @@ function buildPanel(ctx) {
   panel.append(head, notice, scopeBox, messages, composer);
   panel._ui = { modeBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn };
   closeBtn.addEventListener('click', closeAssistant);
-  settingsBtn.addEventListener('click', () => openAISettings());
+  settingsBtn.addEventListener('click', () => (window.__navmini?.openSettings?.('ai') || openAISettings()));
   sendBtn.addEventListener('click', () => sendMessage());
   input.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendMessage(); }
@@ -96,7 +97,7 @@ async function loadState() {
     const st = await apiGet('/api/ai/state');
     live.state = st;
     const { modeBadge } = live.panel._ui;
-    modeBadge.textContent = MODE_LABEL[st.permission] || st.permission;
+    modeBadge.textContent = tr(MODE_LABEL[st.permission] || st.permission);
     modeBadge.dataset.mode = st.permission;
     panelClass(st);
   } catch (err) {
@@ -117,7 +118,7 @@ function showNotice(text, configurable = false) {
   box.append(h('span', { class: 'ai-notice-icon', html: icon('info') }), h('span', {}, text));
   if (configurable) {
     const b = h('button', { class: 'btn sm' }, '配置');
-    b.addEventListener('click', () => openAISettings());
+    b.addEventListener('click', () => (window.__navmini?.openSettings?.('ai') || openAISettings()));
     box.append(h('span', { class: 'flex-1' }), b);
   }
   box.classList.remove('hidden');
@@ -423,7 +424,7 @@ function openAISettings() {
       });
       if (live) {
         live.state = out;
-        live.panel._ui.modeBadge.textContent = MODE_LABEL[out.permission] || out.permission;
+        live.panel._ui.modeBadge.textContent = tr(MODE_LABEL[out.permission] || out.permission);
         live.panel._ui.modeBadge.dataset.mode = out.permission;
         panelClass(out);
         if (out.hasKey && out.enabled) live.panel._ui.notice.classList.add('hidden');
@@ -438,3 +439,17 @@ function openAISettings() {
   });
   m.footer.append(h('span', { class: 'spacer' }), test, cancel, save);
 }
+
+
+document.addEventListener('navmini:ai-config', async () => {
+  if (!live) return;
+  await loadState();
+  const notice = live.panel._ui.notice;
+  if (live.state?.enabled && live.state?.hasKey) {
+    notice.classList.add('hidden');
+  } else if (!live.state?.hasKey) {
+    showNotice('尚未配置 DeepSeek API Key。配置后即可生成 SQL。', true);
+  } else {
+    showNotice('DeepSeek 助手未启用，请到设置里开启。', true);
+  }
+});

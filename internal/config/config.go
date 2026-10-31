@@ -81,14 +81,28 @@ type storedConnection struct {
 
 // Settings holds UI preferences that survive restarts.
 type Settings struct {
-	Theme    string `json:"theme"`
-	PageSize int    `json:"pageSize"`
-	MaxRows  int    `json:"maxRows"`
-	FontSize int    `json:"fontSize"`
+	Theme      string `json:"theme"`
+	Language   string `json:"language"` // en | zh
+	PageSize   int    `json:"pageSize"`
+	MaxRows    int    `json:"maxRows"`
+	FontSize   int    `json:"fontSize"`   // editor font size
+	FontFamily string `json:"fontFamily"` // system | mono | serif
+	Background string `json:"background"` // stored image filename, empty = none
 }
 
 func DefaultSettings() Settings {
-	return Settings{Theme: "dark", PageSize: 200, MaxRows: 1000, FontSize: 13}
+	return Settings{Theme: "dark", Language: "en", PageSize: 200, MaxRows: 1000, FontSize: 13, FontFamily: "system"}
+}
+
+// SavedQuery is a user-named SQL snippet scoped to a connection endpoint.
+type SavedQuery struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	SQL       string    `json:"sql"`
+	Host      string    `json:"host"` // host:port
+	Database  string    `json:"database"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // AIConfig is the public (secret-free) DeepSeek configuration.
@@ -131,6 +145,7 @@ type Store struct {
 	conns    []Connection
 	settings Settings
 	history  []HistoryEntry
+	saved    []SavedQuery
 	ai       AIConfig
 	aiKey    string
 }
@@ -168,6 +183,9 @@ func Open(home string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadAI(); err != nil {
+		return nil, err
+	}
+	if err := s.loadSavedQueries(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -308,6 +326,14 @@ func (s *Store) SaveSettings(v Settings) error {
 	if v.Theme != "light" {
 		v.Theme = "dark"
 	}
+	if v.Language != "zh" {
+		v.Language = "en"
+	}
+	switch v.FontFamily {
+	case "mono", "serif":
+	default:
+		v.FontFamily = "system"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settings = v
@@ -422,9 +448,21 @@ func (s *Store) loadSettings() error {
 	if v.FontSize >= 11 {
 		s.settings.FontSize = v.FontSize
 	}
-	if v.Theme == "light" {
-		s.settings.Theme = "light"
+	if v.Theme == "light" || v.Theme == "dark" {
+		s.settings.Theme = v.Theme
 	}
+	if v.Language == "zh" || v.Language == "en" {
+		s.settings.Language = v.Language
+	}
+	if v.FontFamily == "mono" || v.FontFamily == "serif" {
+		s.settings.FontFamily = v.FontFamily
+	} else {
+		s.settings.FontFamily = "system"
+	}
+	if v.FontSize >= 11 {
+		s.settings.FontSize = v.FontSize
+	}
+	s.settings.Background = v.Background
 	return nil
 }
 
@@ -625,4 +663,77 @@ func (s *Store) loadAI() error {
 	}
 	s.ai.HasKey = s.aiKey != ""
 	return nil
+}
+
+func (s *Store) SavedQueries(host string) []SavedQuery {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]SavedQuery, 0, len(s.saved))
+	for _, q := range s.saved {
+		if host == "" || q.Host == host {
+			out = append(out, q)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out
+}
+
+func (s *Store) SaveQuery(q SavedQuery) (SavedQuery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	q.Name = strings.TrimSpace(q.Name)
+	q.SQL = strings.TrimSpace(q.SQL)
+	q.Host = strings.TrimSpace(q.Host)
+	if q.Name == "" {
+		q.Name = "Query"
+	}
+	if q.SQL == "" {
+		return SavedQuery{}, errors.New("SQL is empty")
+	}
+	idx := -1
+	for i := range s.saved {
+		if q.ID != "" && s.saved[i].ID == q.ID {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		q.CreatedAt = s.saved[idx].CreatedAt
+		q.UpdatedAt = now
+		s.saved[idx] = q
+	} else {
+		q.ID = newID()
+		q.CreatedAt = now
+		q.UpdatedAt = now
+		s.saved = append(s.saved, q)
+	}
+	if len(s.saved) > 500 {
+		s.saved = s.saved[len(s.saved)-500:]
+	}
+	return q, writeJSONAtomic(filepath.Join(s.home, "saved_queries.json"), s.saved, 0o600)
+}
+
+func (s *Store) DeleteSavedQuery(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.saved[:0]
+	for _, q := range s.saved {
+		if q.ID != id {
+			out = append(out, q)
+		}
+	}
+	s.saved = out
+	return writeJSONAtomic(filepath.Join(s.home, "saved_queries.json"), s.saved, 0o600)
+}
+
+func (s *Store) loadSavedQueries() error {
+	raw, err := os.ReadFile(filepath.Join(s.home, "saved_queries.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, &s.saved)
 }

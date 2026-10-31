@@ -3,8 +3,11 @@ package server
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -554,4 +557,132 @@ func safeFileName(name string) string {
 		}
 	}
 	return b.String()
+}
+
+func (s *Server) handleSavedQueries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.store.SavedQueries(r.URL.Query().Get("host")))
+}
+
+func (s *Server) handleSaveQuery(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var q config.SavedQuery
+	if err := decodeJSON(r, &q); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if q.Host == "" {
+		fail(w, http.StatusBadRequest, errors.New("host is required"))
+		return
+	}
+	saved, err := s.store.SaveQuery(q)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleDeleteSavedQuery(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.DeleteSavedQuery(req.ID); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleBackground(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := filepath.Base(s.store.GetSettings().Background)
+	if name == "" || name == "." {
+		http.NotFound(w, r)
+		return
+	}
+	p := filepath.Join(s.store.Home(), name)
+	f, err := os.Open(p)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, name, time.Now(), f)
+}
+
+func (s *Server) handleUploadBackground(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	defer file.Close()
+	ext := strings.ToLower(filepath.Ext(hdr.Filename))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".webp":
+	default:
+		fail(w, http.StatusBadRequest, errors.New("only png, jpg, jpeg or webp images are supported"))
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 8<<20+1))
+	if err != nil || len(data) > 8<<20 {
+		fail(w, http.StatusBadRequest, errors.New("image is larger than 8 MB"))
+		return
+	}
+	// remove old background files
+	for _, old := range []string{"background.png", "background.jpg", "background.jpeg", "background.webp"} {
+		_ = os.Remove(filepath.Join(s.store.Home(), old))
+	}
+	name := "background" + ext
+	if err := os.WriteFile(filepath.Join(s.store.Home(), name), data, 0o600); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	settings := s.store.GetSettings()
+	settings.Background = name
+	if err := s.store.SaveSettings(settings); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"background": name})
+}
+
+func (s *Server) handleClearBackground(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	for _, old := range []string{"background.png", "background.jpg", "background.jpeg", "background.webp"} {
+		_ = os.Remove(filepath.Join(s.store.Home(), old))
+	}
+	settings := s.store.GetSettings()
+	settings.Background = ""
+	if err := s.store.SaveSettings(settings); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

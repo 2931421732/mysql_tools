@@ -23,10 +23,11 @@ type Server struct {
 	token   string
 	version string
 	started time.Time
+	imports *importStore
 }
 
 func New(store *config.Store, mgr *mysqlx.Manager, token, version string) *Server {
-	return &Server{store: store, mgr: mgr, token: token, version: version, started: time.Now()}
+	return &Server{store: store, mgr: mgr, token: token, version: version, started: time.Now(), imports: newImportStore()}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -36,35 +37,45 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(web.FS))))
 
 	routes := map[string]http.HandlerFunc{
-		"/api/ping":               s.handlePing,
-		"/api/state":              s.handleState,
-		"/api/settings":           s.handleSettings,
-		"/api/connections/save":   s.handleSaveConnection,
-		"/api/connections/delete": s.handleDeleteConnection,
-		"/api/connections/test":   s.handleTestConnection,
-		"/api/session/open":       s.handleOpenSession,
-		"/api/session/close":      s.handleCloseSession,
-		"/api/databases":          s.handleDatabases,
-		"/api/objects":            s.handleObjects,
-		"/api/table":              s.handleTable,
-		"/api/query":              s.handleQuery,
-		"/api/query/cancel":       s.handleCancel,
-		"/api/rows":               s.handleRows,
-		"/api/rows/update":        s.handleUpdateRow,
-		"/api/rows/insert":        s.handleInsertRow,
-		"/api/rows/delete":        s.handleDeleteRow,
-		"/api/rows/sql":           s.handleRowSQL,
-		"/api/table/backup":       s.handleBackupTable,
-		"/api/ai/state":           s.handleAIState,
-		"/api/ai/config":          s.handleAIConfig,
-		"/api/ai/test":            s.handleAITest,
-		"/api/ai/chat":            s.handleAIChat,
-		"/api/ai/execute":         s.handleAIExecute,
-		"/api/processlist":        s.handleProcesslist,
-		"/api/processlist/kill":   s.handleKill,
-		"/api/status":             s.handleStatus,
-		"/api/history":            s.handleHistory,
-		"/api/export":             s.handleExport,
+		"/api/ping":                      s.handlePing,
+		"/api/state":                     s.handleState,
+		"/api/settings":                  s.handleSettings,
+		"/api/connections/save":          s.handleSaveConnection,
+		"/api/connections/delete":        s.handleDeleteConnection,
+		"/api/connections/test":          s.handleTestConnection,
+		"/api/session/open":              s.handleOpenSession,
+		"/api/session/close":             s.handleCloseSession,
+		"/api/databases":                 s.handleDatabases,
+		"/api/objects":                   s.handleObjects,
+		"/api/table":                     s.handleTable,
+		"/api/query":                     s.handleQuery,
+		"/api/query/cancel":              s.handleCancel,
+		"/api/rows":                      s.handleRows,
+		"/api/rows/update":               s.handleUpdateRow,
+		"/api/rows/insert":               s.handleInsertRow,
+		"/api/rows/delete":               s.handleDeleteRow,
+		"/api/rows/sql":                  s.handleRowSQL,
+		"/api/table/backup":              s.handleBackupTable,
+		"/api/ai/state":                  s.handleAIState,
+		"/api/ai/config":                 s.handleAIConfig,
+		"/api/ai/test":                   s.handleAITest,
+		"/api/ai/chat":                   s.handleAIChat,
+		"/api/ai/execute":                s.handleAIExecute,
+		"/api/processlist":               s.handleProcesslist,
+		"/api/processlist/kill":          s.handleKill,
+		"/api/status":                    s.handleStatus,
+		"/api/history":                   s.handleHistory,
+		"/api/export":                    s.handleExport,
+		"/api/export/xlsx":               s.handleExportXLSX,
+		"/api/import/upload":             s.handleImportUpload,
+		"/api/import/preview":            s.handleImportPreview,
+		"/api/import/execute":            s.handleImportExecute,
+		"/api/saved-queries":             s.handleSavedQueries,
+		"/api/saved-queries/save":        s.handleSaveQuery,
+		"/api/saved-queries/delete":      s.handleDeleteSavedQuery,
+		"/api/settings/background":       s.handleUploadBackground,
+		"/api/settings/background/clear": s.handleClearBackground,
+		"/api/background":                s.handleBackground,
 	}
 	for path, h := range routes {
 		mux.HandleFunc(path, s.auth(h))
