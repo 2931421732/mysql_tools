@@ -4,16 +4,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAG="${1:-v0.2.0}"
+TAG="${1:-v0.2.1}"
+VERSION="${TAG#v}"
 OWNER="hgy_imust"
 REPO="mysql_tools"
 API="https://gitee.com/api/v5"
 TOKEN="${GITEE_TOKEN:-}"
-NOTES="docs/release-notes-v0.2.0.md"
+NOTES="docs/release-notes-${TAG}.md"
 ASSETS=(
-  "dist/release/NavMini-0.2.0-macos-arm64.dmg"
-  "dist/release/NavMini-0.2.0-windows-amd64.exe"
-  "dist/release/NavMini-0.2.0-windows-amd64.zip"
+  "dist/release/NavMini-${VERSION}-macos-arm64.dmg"
+  "dist/release/NavMini-${VERSION}-windows-amd64.exe"
+  "dist/release/NavMini-${VERSION}-windows-amd64.zip"
   "dist/release/SHA256SUMS"
 )
 

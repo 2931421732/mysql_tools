@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch release assets from Gitee
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          mkdir -p dist
+          base="https://gitee.com/hgy_imust/mysql_tools/releases/download/${TAG}"
+          for f in \
+            "NavMini-${VERSION}-macos-arm64.dmg" \
+            "NavMini-${VERSION}-windows-amd64.exe" \
+            "NavMini-${VERSION}-windows-amd64.zip" \
+            "SHA256SUMS"; do
+            echo "downloading $f"
+            curl -fL --retry 3 --retry-delay 2 -o "dist/$f" "$base/$f"
+          done
+          ls -lh dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "NavMini ${TAG}" \
+              --notes-file "docs/release-notes-${TAG}.md"
+          fi

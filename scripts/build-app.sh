@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.2.0}"
+VERSION="${VERSION:-0.2.1}"
 APP="dist/NavMini.app"
 GO_IMAGE="bin/navmini"
 
