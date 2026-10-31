@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NavMini · MySQL</title>
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314171c'/%3E%3Cellipse cx='16' cy='10' rx='8' ry='3.4' fill='%2333c9a4'/%3E%3Cpath d='M8 10v6c0 1.9 3.6 3.4 8 3.4s8-1.5 8-3.4v-6' fill='none' stroke='%2333c9a4' stroke-width='2'/%3E%3Cpath d='M8 16v6c0 1.9 3.6 3.4 8 3.4s8-1.5 8-3.4v-6' fill='none' stroke='%2333c9a4' stroke-opacity='.55' stroke-width='2'/%3E%3C/svg%3E">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div class="brand-text">
+        <strong>NavMini</strong>
+        <span class="brand-sub">MySQL Client</span>
+      </div>
+      <span class="version-chip" id="version-chip">v{{VERSION}}</span>
+    </div>
+    <div class="sidebar-tools">
+      <button class="btn ghost icon" id="btn-new-connection" title="新建连接 (⌘N)"></button>
+      <div class="search-box">
+        <span class="search-icon"></span>
+        <input id="tree-search" type="search" placeholder="搜索连接、库、表" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="btn ghost icon" id="btn-refresh-tree" title="刷新连接树"></button>
+    </div>
+    <div id="tree" class="tree" role="tree"></div>
+    <div class="sidebar-foot">
+      <button class="link-btn" id="btn-history">查询历史</button>
+      <span class="dot-sep">·</span>
+      <button class="link-btn" id="btn-settings">设置</button>
+      <span class="flex-1"></span>
+      <button class="btn ghost icon" id="btn-theme" title="切换主题"></button>
+    </div>
+  </aside>
+  <div id="sidebar-resizer" title="拖动调整宽度"></div>
+  <main id="main">
+    <header id="tabbar">
+      <div id="tabs" role="tablist"></div>
+      <div class="tabbar-actions">
+        <button class="btn ghost icon" id="btn-new-query" title="新建查询 (⌘T)"></button>
+        <button class="btn ghost icon" id="btn-monitor" title="服务器监控"></button>
+        <span class="tabbar-sep"></span>
+        <button class="btn ghost icon" id="btn-about" title="关于 NavMini"></button>
+      </div>
+    </header>
+    <section id="workspace"></section>
+    <footer id="statusbar">
+      <span id="status-conn" class="status-item">未连接</span>
+      <span id="status-db" class="status-item muted"></span>
+      <span class="flex-1"></span>
+      <span id="status-message" class="status-item muted"></span>
+      <span id="status-rows" class="status-item muted"></span>
+    </footer>
+  </main>
+</div>
+<div id="modals"></div>
+<div id="toasts"></div>
+<div id="context-menu" class="context-menu hidden"></div>
+<div id="tooltip" class="tooltip hidden"></div>
+<script id="bootstrap" type="application/json">{"token":"{{TOKEN}}","version":"{{VERSION}}"}</script>
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

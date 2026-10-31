@@ -1,0 +1,1749 @@
+import { api, apiGet, apiPost, TOKEN, VERSION } from './api.js';
+import {
+  h, toast, openModal, confirmDialog, contextMenu, copyText, downloadBlob, downloadText,
+  formatBytes, formatNumber, formatMs, timeAgo, debounce, escapeHtml, openDrawer, closeDrawer,
+} from './dom.js';
+import { icon } from './icons.js';
+import { Grid, gridToCSV } from './grid.js';
+import { SQLEditor } from './editor.js';
+
+const $ = (sel) => document.querySelector(sel);
+
+const S = {
+  version: VERSION,
+  connections: [],
+  settings: { theme: 'dark', pageSize: 200, maxRows: 1000, fontSize: 13 },
+  tabs: [],
+  activeId: null,
+  seq: 0,
+  conns: new Map(),
+  search: '',
+};
+
+const KEYWORDS = `
+SELECT FROM WHERE INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE ALTER DROP TRUNCATE
+JOIN INNER LEFT RIGHT FULL OUTER CROSS ON USING AS AND OR NOT NULL IS IN BETWEEN LIKE
+GROUP BY ORDER HAVING LIMIT OFFSET UNION ALL DISTINCT CASE WHEN THEN ELSE END EXISTS
+PRIMARY KEY FOREIGN REFERENCES UNIQUE INDEX CONSTRAINT DEFAULT AUTO_INCREMENT COMMENT
+ENGINE CHARSET COLLATE SHOW DATABASES TABLES COLUMNS INDEXES VIEW TRIGGER PROCEDURE
+FUNCTION EVENT DESCRIBE EXPLAIN ANALYZE BEGIN START TRANSACTION COMMIT ROLLBACK
+GRANT REVOKE USER IDENTIFIED PASSWORD WITH OPTION LOCK UNLOCK READ WRITE IF CALL USE
+DATABASE SCHEMA TEMPORARY REPLACE IGNORE ASC DESC OVER WINDOW RECURSIVE
+`.trim().split(/\s+/);
+
+/* ------------------------------------------------------------------ */
+/* bootstrap                                                          */
+/* ------------------------------------------------------------------ */
+
+async function init() {
+  bindStaticIcons();
+  bindChrome();
+  applyTheme(S.settings.theme);
+  try {
+    const state = await apiGet('/api/state');
+    S.connections = state.connections || [];
+    S.settings = Object.assign(S.settings, state.settings || {});
+    applyTheme(S.settings.theme);
+    document.getElementById('version-chip').textContent = 'v' + (state.app?.version || VERSION);
+  } catch (err) {
+    toast('无法连接 NavMini 服务：' + err.message, 'err', 8000);
+  }
+  renderTree();
+  openWelcome();
+  bindShortcuts();
+}
+
+function bindStaticIcons() {
+  $('#btn-new-connection').innerHTML = icon('plus');
+  $('#btn-refresh-tree').innerHTML = icon('refresh');
+  $('#btn-new-query').innerHTML = icon('plus');
+  $('#btn-monitor').innerHTML = icon('activity');
+  $('#btn-about').innerHTML = icon('info');
+  $('#btn-theme').innerHTML = icon('moon');
+  $('.search-icon').innerHTML = icon('search');
+}
+
+function bindChrome() {
+  $('#btn-new-connection').addEventListener('click', () => openConnectionDialog());
+  $('#btn-refresh-tree').addEventListener('click', refreshTree);
+  $('#btn-new-query').addEventListener('click', () => newQueryFromContext());
+  $('#btn-monitor').addEventListener('click', () => openMonitor());
+  $('#btn-about').addEventListener('click', openAbout);
+  $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-history').addEventListener('click', openHistory);
+  $('#btn-theme').addEventListener('click', toggleTheme);
+  $('#tree-search').addEventListener('input', debounce((e) => { S.search = e.target.value.trim(); renderTree(); }, 120));
+  bindSidebarResize();
+}
+
+function applyTheme(theme) {
+  if (theme !== 'light') theme = 'dark';
+  S.settings.theme = theme;
+  document.documentElement.dataset.theme = theme;
+  const btn = $('#btn-theme');
+  if (btn) btn.innerHTML = icon(theme === 'dark' ? 'moon' : 'sun');
+}
+
+async function toggleTheme() {
+  applyTheme(S.settings.theme === 'dark' ? 'light' : 'dark');
+  try { await apiPost('/api/settings', S.settings); } catch { /* non-fatal */ }
+}
+
+/* ------------------------------------------------------------------ */
+/* connection state helpers                                           */
+/* ------------------------------------------------------------------ */
+
+function connById(id) { return S.connections.find((c) => c.id === id); }
+
+function connState(id) {
+  if (!S.conns.has(id)) {
+    S.conns.set(id, {
+      sessionId: null, server: null, databases: null, objects: new Map(),
+      openDbs: new Set(), expanded: false, loading: false, opening: null, error: null,
+    });
+  }
+  return S.conns.get(id);
+}
+
+async function openSession(connId, database = '') {
+  return apiPost('/api/session/open', { connectionId: connId, database });
+}
+
+async function ensureTreeSession(connId) {
+  const cs = connState(connId);
+  if (cs.sessionId) return cs.sessionId;
+  if (!cs.opening) {
+    cs.opening = openSession(connId).then((v) => {
+      cs.sessionId = v.id;
+      cs.server = v.server;
+      return v.id;
+    }).finally(() => { cs.opening = null; });
+  }
+  return cs.opening;
+}
+
+async function ensureTabSession(tab) {
+  if (tab.sessionId) return tab.sessionId;
+  if (tab.opening) return tab.opening;
+  tab.opening = openSession(tab.connId).then((v) => {
+    tab.sessionId = v.id;
+    tab.server = v.server;
+    return v.id;
+  }).finally(() => { tab.opening = null; });
+  return tab.opening;
+}
+
+function isStaleSession(err) {
+  const msg = (err && err.message) || '';
+  return /session not found|session is closed|bad connection|invalid connection|connection is already closed/i.test(msg);
+}
+
+async function withTabSession(tab, fn) {
+  try {
+    return await fn(await ensureTabSession(tab));
+  } catch (err) {
+    if (!isStaleSession(err)) throw err;
+    tab.sessionId = null;
+    tab.opening = null;
+    return await fn(await ensureTabSession(tab));
+  }
+}
+
+function setStatus(connText, dbText, message, rowsText) {
+  $('#status-conn').textContent = connText || '未连接';
+  $('#status-db').textContent = dbText || '';
+  if (message !== undefined) $('#status-message').textContent = message || '';
+  if (rowsText !== undefined) $('#status-rows').textContent = rowsText || '';
+}
+
+function updateStatusForTab(tab) {
+  if (!tab) return setStatus('未连接', '', '', '');
+  const conn = connById(tab.connId);
+  const name = conn ? conn.name : (tab.server?.version ? 'MySQL' : '未连接');
+  setStatus(name, tab.db || '', '', '');
+}
+
+/* ------------------------------------------------------------------ */
+/* sidebar / tree                                                     */
+/* ------------------------------------------------------------------ */
+
+function refreshTree() {
+  for (const cs of S.conns.values()) {
+    cs.databases = null;
+    cs.objects.clear();
+    cs.openDbs.clear();
+  }
+  renderTree();
+}
+
+function matches(text, q) { return (text || '').toLowerCase().includes(q); }
+
+function renderTree() {
+  const tree = $('#tree');
+  const scrollTop = tree.scrollTop;
+  tree.innerHTML = '';
+  const q = S.search.toLowerCase();
+  let shown = 0;
+  for (const conn of S.connections) {
+    const cs = connState(conn.id);
+    const connHit = !q || matches(conn.name, q) || matches(conn.host, q) || matches(conn.user, q) || matches(conn.group, q);
+    let childHit = false;
+    if (q && cs.databases) {
+      for (const db of cs.databases) {
+        if (matches(db.name, q)) { childHit = true; break; }
+        const objs = cs.objects.get(db.name);
+        if (objs && objs.some((o) => matches(o.name, q))) { childHit = true; break; }
+      }
+    }
+    if (!connHit && !childHit) continue;
+    shown++;
+    tree.append(renderConnNode(conn, cs, q, connHit));
+  }
+  if (!shown) {
+    tree.append(h('div', { class: 'tree-empty', style: { padding: '18px 10px' } },
+      S.connections.length ? '没有匹配的连接' : '还没有连接，点击 + 新建'));
+    if (!S.connections.length) {
+      tree.append(h('button', { class: 'btn sm', style: { margin: '0 12px' }, onClick: () => openConnectionDialog() }, '新建连接'));
+    }
+  }
+  tree.scrollTop = scrollTop;
+}
+
+function renderConnNode(conn, cs, q, connHit) {
+  const node = h('div', { class: 'tree-node' });
+  const open = cs.expanded || (q && connHit);
+  const caret = h('span', { class: 'node-caret' + (open ? ' open' : ''), html: icon('chevron-right') });
+  const row = h('div', { class: 'node-row', style: { '--depth': 0 }, title: `${conn.user}@${conn.host}:${conn.port}` },
+    caret,
+    h('span', { class: 'node-icon conn', html: icon('database') }),
+    h('span', { class: 'node-name' }, conn.name),
+    h('span', { class: 'node-meta' }, cs.databases ? `${cs.databases.length} 个库` : (cs.server ? '已连接' : '')),
+    h('span', { class: 'row-actions' },
+      h('button', { class: 'btn ghost sm icon', title: '新建查询', html: icon('terminal'), onClick: (e) => { e.stopPropagation(); openQuery(conn.id, conn.database || '', ''); } }),
+      h('button', { class: 'btn ghost sm icon', title: '编辑连接', html: icon('pencil'), onClick: (e) => { e.stopPropagation(); openConnectionDialog(conn); } }),
+    ),
+  );
+  row.addEventListener('click', () => toggleConn(conn.id));
+  row.addEventListener('dblclick', () => openQuery(conn.id, conn.database || '', ''));
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    contextMenu(e.clientX, e.clientY, [
+      { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, conn.database || '', '') },
+      { label: '刷新', icon: 'refresh', action: () => { cs.databases = null; cs.objects.clear(); renderTree(); } },
+      { sep: true },
+      { label: '编辑连接', icon: 'pencil', action: () => openConnectionDialog(conn) },
+      { label: '删除连接', icon: 'trash', danger: true, action: () => deleteConnection(conn) },
+    ]);
+  });
+  if (S.activeTabConn === conn.id) row.classList.add('selected');
+  node.append(row);
+
+  if (open) {
+    if (cs.loading || cs.opening) {
+      node.append(h('div', { class: 'tree-loading' }, h('span', { class: 'spinner' }), '正在连接…'));
+    } else if (cs.error) {
+      node.append(h('div', { class: 'tree-empty', style: { color: 'var(--red)' } }, cs.error));
+    } else if (cs.databases) {
+      for (const db of cs.databases) {
+        if (q && !connHit && !matches(db.name, q) && !(cs.objects.get(db.name) || []).some((o) => matches(o.name, q))) continue;
+        node.append(renderDbNode(conn, cs, db, q));
+      }
+      if (!cs.databases.length) node.append(h('div', { class: 'tree-empty' }, '没有数据库'));
+    }
+  }
+  return node;
+}
+
+function renderDbNode(conn, cs, db, q) {
+  const wrap = h('div', { class: 'tree-node' });
+  const open = cs.openDbs.has(db.name) || (q && matches(db.name, q));
+  const objects = cs.objects.get(db.name);
+  const row = h('div', { class: 'node-row', style: { '--depth': 1 }, title: db.collation || db.name },
+    h('span', { class: 'node-caret' + (open ? ' open' : ''), html: icon('chevron-right') }),
+    h('span', { class: 'node-icon db', html: icon('database') }),
+    h('span', { class: 'node-name' }, db.name),
+    h('span', { class: 'node-meta' }, db.tables ? formatNumber(db.tables) : ''),
+  );
+  row.addEventListener('click', () => toggleDb(conn.id, db.name));
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    contextMenu(e.clientX, e.clientY, [
+      { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, db.name, '') },
+      { label: '刷新对象', icon: 'refresh', action: () => { cs.objects.delete(db.name); toggleDb(conn.id, db.name, true); } },
+      { label: '复制库名', icon: 'copy', action: () => copyText(db.name) },
+    ]);
+  });
+  wrap.append(row);
+
+  if (open && objects) {
+    const tables = objects.filter((o) => o.type !== 'VIEW' && (!q || matches(o.name, q) || matches(db.name, q)));
+    const views = objects.filter((o) => o.type === 'VIEW' && (!q || matches(o.name, q) || matches(db.name, q)));
+    if (tables.length) {
+      wrap.append(h('div', { class: 'tree-section', style: { '--depth': 2 } }, `表 · ${tables.length}`));
+      for (const t of tables) wrap.append(renderTableNode(conn, db, t));
+    }
+    if (views.length) {
+      wrap.append(h('div', { class: 'tree-section', style: { '--depth': 2 } }, `视图 · ${views.length}`));
+      for (const v of views) wrap.append(renderTableNode(conn, db, v));
+    }
+    if (!tables.length && !views.length) wrap.append(h('div', { class: 'tree-empty', style: { '--depth': 2 } }, '没有对象'));
+  } else if (open) {
+    wrap.append(h('div', { class: 'tree-loading', style: { '--depth': 2 } }, h('span', { class: 'spinner' }), '加载对象…'));
+  }
+  return wrap;
+}
+
+function renderTableNode(conn, db, obj) {
+  const isView = obj.type === 'VIEW';
+  const row = h('div', { class: 'node-row', style: { '--depth': 2 }, title: `${obj.name}${obj.engine ? ' · ' + obj.engine : ''}` },
+    h('span', { class: 'node-caret leaf' }),
+    h('span', { class: 'node-icon ' + (isView ? 'view' : 'table'), html: icon(isView ? 'view' : 'table') }),
+    h('span', { class: 'node-name' }, obj.name),
+    h('span', { class: 'node-meta' }, obj.rows ? formatNumber(obj.rows) : ''),
+  );
+  row.addEventListener('click', () => openTable(conn.id, db.name, obj.name));
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    contextMenu(e.clientX, e.clientY, [
+      { label: '打开数据', icon: 'table', action: () => openTable(conn.id, db.name, obj.name) },
+      { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, db.name, `SELECT * FROM ${ident(db.name)}.${ident(obj.name)} LIMIT 100;`) },
+      { sep: true },
+      { label: '复制名称', icon: 'copy', action: () => copyText(obj.name) },
+    ]);
+  });
+  return row;
+}
+
+async function toggleConn(connId) {
+  const cs = connState(connId);
+  cs.expanded = !cs.expanded;
+  S.activeTabConn = connId;
+  renderTree();
+  if (!cs.expanded || cs.databases) return;
+  cs.loading = true;
+  cs.error = null;
+  renderTree();
+  try {
+    const sid = await ensureTreeSession(connId);
+    cs.databases = await apiGet('/api/databases?session=' + encodeURIComponent(sid));
+    if (!cs.sessionId) cs.sessionId = sid;
+  } catch (err) {
+    cs.error = err.message;
+    cs.expanded = false;
+  } finally {
+    cs.loading = false;
+    renderTree();
+  }
+}
+
+async function toggleDb(connId, dbName, forceLoad = false) {
+  const cs = connState(connId);
+  if (cs.openDbs.has(dbName)) {
+    cs.openDbs.delete(dbName);
+    renderTree();
+    return;
+  }
+  cs.openDbs.add(dbName);
+  cs.expanded = true;
+  renderTree();
+  if (cs.objects.has(dbName) && !forceLoad) return;
+  try {
+    const sid = await ensureTreeSession(connId);
+    const objs = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(dbName)}`);
+    cs.objects.set(dbName, objs);
+  } catch (err) {
+    toast(`加载 ${dbName} 失败：${err.message}`, 'err', 5000);
+  }
+  renderTree();
+}
+
+async function deleteConnection(conn) {
+  const ok = await confirmDialog({
+    title: '删除连接',
+    message: `确定删除 <code>${escapeHtml(conn.name)}</code>？仅删除本地保存的连接配置，不会影响数据库。`,
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await apiPost('/api/connections/delete', { id: conn.id });
+    const cs = S.conns.get(conn.id);
+    if (cs?.sessionId) apiPost('/api/session/close', { session: cs.sessionId }).catch(() => {});
+    S.conns.delete(conn.id);
+    await reloadConnections();
+    renderTree();
+    toast('连接已删除', 'ok');
+  } catch (err) {
+    toast(err.message, 'err', 5000);
+  }
+}
+
+async function reloadConnections() {
+  const state = await apiGet('/api/state');
+  S.connections = state.connections || [];
+  S.settings = Object.assign(S.settings, state.settings || {});
+}
+
+/* ------------------------------------------------------------------ */
+/* tabs                                                               */
+/* ------------------------------------------------------------------ */
+
+function tabIcon(kind) {
+  return { query: 'code', table: 'table', monitor: 'activity', welcome: 'bolt' }[kind] || 'file';
+}
+
+function activeTab() { return S.tabs.find((t) => t.id === S.activeId) || null; }
+
+function addTab(kind, props = {}) {
+  const tab = Object.assign({ id: 't' + (++S.seq), kind, title: '', el: document.createElement('div') }, props);
+  tab.el.className = 'pane';
+  tab.el.dataset.tab = tab.id;
+  $('#workspace').append(tab.el);
+  S.tabs.push(tab);
+  activateTab(tab.id);
+  return tab;
+}
+
+function activateTab(id) {
+  S.activeId = id;
+  for (const t of S.tabs) t.el.classList.toggle('active', t.id === id);
+  renderTabs();
+  const tab = activeTab();
+  if (tab) {
+    S.activeTabConn = tab.connId || null;
+    updateStatusForTab(tab);
+    if (tab.onActivate) setTimeout(() => tab.onActivate(), 0);
+    renderTree();
+  }
+  $('#tabs').scrollTo({ left: 99999 });
+}
+
+function renderTabs() {
+  const host = $('#tabs');
+  host.innerHTML = '';
+  for (const tab of S.tabs) {
+    const close = h('button', { class: 'tab-close', title: '关闭 (⌘W)', html: icon('x') });
+    close.addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab.id); });
+    const node = h('div', { class: 'tab' + (tab.id === S.activeId ? ' active' : ''), title: tab.title, role: 'tab' },
+      h('span', { class: 'tab-ico', html: icon(tabIcon(tab.kind)) }),
+      h('span', { class: 'tab-title' }, tab.title),
+      close,
+    );
+    node.addEventListener('click', () => activateTab(tab.id));
+    node.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(tab.id); });
+    node.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      contextMenu(e.clientX, e.clientY, [
+        { label: '关闭', icon: 'x', action: () => closeTab(tab.id) },
+        { label: '关闭其他标签', icon: 'x', action: () => closeOtherTabs(tab.id) },
+      ]);
+    });
+    host.append(node);
+  }
+}
+
+function closeOtherTabs(keepId) {
+  for (const t of [...S.tabs]) if (t.id !== keepId) closeTab(t.id, true);
+}
+
+async function closeTab(id, silent = false) {
+  const idx = S.tabs.findIndex((t) => t.id === id);
+  if (idx < 0) return;
+  const tab = S.tabs[idx];
+  if (tab.running && tab.queryId && tab.sessionId) {
+    apiPost('/api/query/cancel', { session: tab.sessionId, queryId: tab.queryId }).catch(() => {});
+  }
+  if (tab.sessionId) apiPost('/api/session/close', { session: tab.sessionId }).catch(() => {});
+  if (tab.dispose) tab.dispose();
+  tab.el.remove();
+  S.tabs.splice(idx, 1);
+  if (S.activeId === id) {
+    const next = S.tabs[Math.min(idx, S.tabs.length - 1)];
+    if (next) activateTab(next.id);
+    else { S.activeId = null; openWelcome(); }
+  }
+  renderTabs();
+  if (!silent) updateStatusForTab(activeTab());
+}
+
+/* ------------------------------------------------------------------ */
+/* welcome                                                            */
+/* ------------------------------------------------------------------ */
+
+function openWelcome() {
+  const existing = S.tabs.find((t) => t.kind === 'welcome');
+  if (existing) {
+    activateTab(existing.id);
+    renderWelcome(existing);
+    return existing;
+  }
+  const tab = addTab('welcome', { title: '欢迎' });
+  renderWelcome(tab);
+  return tab;
+}
+
+function renderWelcome(tab) {
+  tab.el.innerHTML = '';
+  const card = h('div', { class: 'welcome-card' });
+  card.append(
+    h('div', { class: 'welcome-hero' },
+      h('div', { class: 'welcome-logo' }),
+      h('div', {},
+        h('h1', { class: 'welcome-title' }, 'NavMini'),
+        h('p', { class: 'welcome-sub' }, '一个受 Navicat 启发的轻量 MySQL 工作台 · Go + 原生 WebView'),
+      ),
+    ),
+  );
+  const quick = h('div', { class: 'welcome-panel' }, h('h3', {}, '快速连接'));
+  if (!S.connections.length) {
+    quick.append(h('div', { class: 'welcome-empty' }, '还没有保存任何连接。'));
+    quick.append(h('button', { class: 'btn primary sm', style: { marginTop: '8px' }, onClick: () => openConnectionDialog() }, '新建连接'));
+  } else {
+    for (const conn of S.connections.slice(0, 6)) {
+      const row = h('div', { class: 'recent-conn' },
+        h('span', { class: 'node-icon', html: icon('database') }),
+        h('span', { class: 'name' }, conn.name),
+        h('span', { class: 'meta' }, `${conn.user}@${conn.host}:${conn.port}`),
+      );
+      row.addEventListener('click', () => openQuery(conn.id, conn.database || '', ''));
+      quick.append(row);
+    }
+  }
+  const shortcuts = h('div', { class: 'welcome-panel' }, h('h3', {}, '快捷键'));
+  const rows = [
+    ['运行全部 / 运行选中', '⌘ ↩ / ⇧⌘ ↩'],
+    ['新建查询', '⌘ T'],
+    ['新建连接', '⌘ N'],
+    ['关闭标签页', '⌘ W'],
+    ['自动补全', '⌃ Space'],
+  ];
+  for (const [label, keys] of rows) shortcuts.append(h('div', { class: 'shortcut-row' }, h('span', {}, label), h('span', { class: 'kbd' }, keys)));
+
+  card.append(h('div', { class: 'welcome-grid' }, quick, shortcuts));
+  card.append(h('p', { class: 'faint', style: { marginTop: '18px', fontSize: '11.5px', lineHeight: '1.7' } },
+    '提示：单击左侧表名打开数据浏览器；在结果网格中右键可复制单元格/整行。SQL 编辑器支持 ⌘↩ 执行与表/列名补全。'));
+  tab.el.append(h('div', { class: 'welcome' }, card));
+}
+
+/* ------------------------------------------------------------------ */
+/* query tab                                                          */
+/* ------------------------------------------------------------------ */
+
+function newQueryFromContext() {
+  const tab = activeTab();
+  const connId = tab?.connId || S.connections[0]?.id;
+  if (!connId) { toast('请先新建一个连接', 'warn'); openConnectionDialog(); return; }
+  const db = tab?.db || connById(connId)?.database || '';
+  openQuery(connId, db, '');
+}
+
+function openQuery(connId, db = '', sql = '') {
+  const conn = connById(connId);
+  if (!conn) { toast('连接不存在', 'err'); return null; }
+  const count = S.tabs.filter((t) => t.kind === 'query').length + 1;
+  const tab = addTab('query', { connId, db: db || conn.database || '', title: `查询 ${count}` });
+  buildQueryTab(tab, sql);
+  return tab;
+}
+
+function buildQueryTab(tab, initialSQL) {
+  const conn = connById(tab.connId);
+  tab.sql = initialSQL || tab.sql || '';
+  tab.results = [];
+  tab.error = '';
+  tab.activeResult = 0;
+  tab.running = false;
+  tab.maxRows = S.settings.maxRows;
+
+  const root = h('div', { class: 'qt' });
+  const dbSel = h('select', { class: 'sel', title: '当前数据库' }, h('option', { value: '' }, '（未选择数据库）'));
+  const runBtn = h('button', { class: 'btn primary sm', html: icon('play') + '<span>运行</span>' });
+  const runSelBtn = h('button', { class: 'btn sm', title: '运行选中 (⇧⌘↩)', html: icon('play') + '<span>选中</span>' });
+  const stopBtn = h('button', { class: 'btn sm danger', disabled: true, html: icon('stop') + '<span>停止</span>' });
+  const explainBtn = h('button', { class: 'btn sm', title: 'EXPLAIN 当前语句', html: icon('activity') + '<span>解释</span>' });
+  const limitSel = h('select', { class: 'sel', title: '每次最多返回的行数' },
+    ...[100, 500, 1000, 5000].map((n) => h('option', { value: String(n) }, `${n} 行`)));
+  limitSel.value = String(tab.maxRows);
+
+  const toolbar = h('div', { class: 'qt-toolbar' },
+    h('span', { class: 'conn-chip' }, h('span', { class: 'dot' }), conn?.name || '连接'),
+    dbSel,
+    h('span', { class: 'spacer' }),
+    runBtn, runSelBtn, stopBtn, explainBtn,
+    h('span', { class: 'spacer' }),
+    h('span', { class: 'faint', style: { fontSize: '11px' } }, '最大行数'), limitSel,
+  );
+
+  const editorHost = h('div', { class: 'editor-shell' });
+  const splitter = h('div', { class: 'splitter', title: '拖动调整编辑区高度' });
+  const resultArea = h('div', { class: 'result-area' });
+  const resultTabs = h('div', { class: 'result-tabs' });
+  const resultBody = h('div', { class: 'result-body' });
+  resultArea.append(resultTabs, resultBody);
+
+  root.append(toolbar, editorHost, splitter, resultArea);
+  tab.el.append(root);
+
+  tab.dbSel = dbSel;
+  tab.resultTabsEl = resultTabs;
+  tab.resultBodyEl = resultBody;
+  tab.runBtn = runBtn;
+  tab.stopBtn = stopBtn;
+
+  tab.editor = new SQLEditor(editorHost, {
+    value: tab.sql,
+    onChange: (v) => { tab.sql = v; },
+    onRun: (selectionOnly) => runQuery(tab, selectionOnly),
+    complete: (word, value, pos) => completionsFor(tab, word, value, pos),
+  });
+  applyEditorFont(tab.editor);
+  setTimeout(() => tab.editor.focus(), 40);
+
+  dbSel.addEventListener('change', () => {
+    tab.db = dbSel.value;
+    updateStatusForTab(tab);
+  });
+  runBtn.addEventListener('click', () => runQuery(tab, false));
+  runSelBtn.addEventListener('click', () => runQuery(tab, true));
+  stopBtn.addEventListener('click', () => cancelQuery(tab));
+  explainBtn.addEventListener('click', () => explainQuery(tab));
+  limitSel.addEventListener('change', () => { tab.maxRows = Number(limitSel.value); });
+
+  bindVerticalSplitter(splitter, editorHost, root);
+
+  tab.populate = async () => {
+    try {
+      const sid = await ensureTabSession(tab);
+      const dbs = await apiGet('/api/databases?session=' + encodeURIComponent(sid));
+      tab.dbList = dbs;
+      const current = tab.db || connById(tab.connId)?.database || '';
+      dbSel.innerHTML = '';
+      dbSel.append(h('option', { value: '' }, '（未选择数据库）'));
+      for (const db of dbs) dbSel.append(h('option', { value: db.name }, db.name));
+      if (current && dbs.some((d) => d.name === current)) dbSel.value = current;
+      else if (dbs.length) { tab.db = dbs[0].name; dbSel.value = dbs[0].name; }
+      else { tab.db = ''; }
+      updateStatusForTab(tab);
+    } catch (err) {
+      toast(err.message, 'err', 6000);
+    }
+  };
+  tab.populate();
+  renderQueryResults(tab);
+}
+
+function applyEditorFont(editor) {
+  const size = S.settings.fontSize || 13;
+  editor.ta.style.fontSize = size + 'px';
+  editor.pre.style.fontSize = size + 'px';
+  editor.ta.style.lineHeight = '1.55';
+  editor.pre.style.lineHeight = '1.55';
+}
+
+function setRunning(tab, running) {
+  tab.running = running;
+  tab.runBtn.disabled = running;
+  tab.stopBtn.disabled = !running;
+}
+
+async function runQuery(tab, selectionOnly) {
+  if (tab.running) return;
+  const sql = selectionOnly ? tab.editor.getSelection().text : tab.editor.value;
+  if (!sql.trim()) { toast('没有可执行的 SQL', 'warn', 2200); return; }
+  await executeSQL(tab, sql);
+}
+
+async function explainQuery(tab) {
+  if (tab.running) return;
+  let sql = tab.editor.getSelection().text || tab.editor.value;
+  sql = sql.trim();
+  if (!sql) return;
+  if (!/^\s*(select|with|insert|update|delete|replace)\b/i.test(sql)) {
+    toast('EXPLAIN 仅适用于 SELECT / INSERT / UPDATE / DELETE', 'warn');
+    return;
+  }
+  await executeSQL(tab, 'EXPLAIN ' + sql);
+}
+
+async function executeSQL(tab, sql) {
+  setRunning(tab, true);
+  const queryId = 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  tab.queryId = queryId;
+  setStatus(connById(tab.connId)?.name, tab.db, '执行中…', '');
+  try {
+    const res = await withTabSession(tab, (sid) => apiPost('/api/query', {
+      session: sid, sql, database: tab.db || '', maxRows: tab.maxRows, queryId,
+    }));
+    tab.results = res.results || [];
+    tab.error = res.error || '';
+    tab.duration = res.duration;
+    tab.activeResult = 0;
+    renderQueryResults(tab);
+    const rows = tab.results.reduce((a, r) => a + (r.rowCount || 0), 0);
+    const affected = tab.results.reduce((a, r) => a + (r.affected || 0), 0);
+    setStatus(connById(tab.connId)?.name, tab.db, `${formatMs(res.duration)} · ${rows ? rows + ' 行' : affected + ' 行受影响'}`, tab.error ? '有错误' : '');
+    if (res.error) toast(res.error.split('\n')[0], 'err', 7000);
+  } catch (err) {
+    tab.results = [];
+    tab.error = err.message;
+    renderQueryResults(tab);
+    setStatus(connById(tab.connId)?.name, tab.db, '执行失败', '');
+    toast(err.message, 'err', 7000);
+  } finally {
+    setRunning(tab, false);
+  }
+}
+
+async function cancelQuery(tab) {
+  if (!tab.running || !tab.sessionId || !tab.queryId) return;
+  try {
+    await apiPost('/api/query/cancel', { session: tab.sessionId, queryId: tab.queryId });
+    toast('已请求取消查询', 'info', 2200);
+  } catch (err) {
+    toast(err.message, 'err', 4000);
+  }
+}
+
+function renderQueryResults(tab) {
+  const tabsEl = tab.resultTabsEl;
+  const bodyEl = tab.resultBodyEl;
+  tabsEl.innerHTML = '';
+  bodyEl.innerHTML = '';
+
+  const entries = [];
+  (tab.results || []).forEach((rs, i) => {
+    if (rs.columns && rs.columns.length) entries.push({ kind: 'grid', rs, key: 'r' + i });
+  });
+  entries.push({ kind: 'msg', key: 'msg' });
+  if (tab.activeResult == null || tab.activeResult >= entries.length) tab.activeResult = 0;
+  tab.entries = entries;
+
+  entries.forEach((entry, i) => {
+    const btn = h('button', { class: 'result-tab' + (i === tab.activeResult ? ' active' : '') },
+      entry.kind === 'grid' ? `结果 ${entry.rs.index}` : '消息',
+      entry.kind === 'grid' ? h('span', { class: 'count' }, `${entry.rs.rowCount} 行`) : null,
+    );
+    btn.addEventListener('click', () => { tab.activeResult = i; renderQueryResults(tab); });
+    tabsEl.append(btn);
+  });
+  tabsEl.append(h('span', { class: 'flex-1' }));
+
+  if (tab.error) bodyEl.append(h('div', { class: 'error-banner' }, tab.error));
+  const entry = entries[tab.activeResult];
+  if (!entry) return;
+  if (entry.kind === 'grid') {
+    const host = h('div', { style: { flex: '1', minHeight: '0' } });
+    bodyEl.append(host);
+    const grid = new Grid(host, { sortable: false, emptyText: '查询没有返回数据' });
+    grid.setData({ columns: entry.rs.columns, rows: entry.rs.rows, pk: [] });
+    if (entry.rs.truncated) {
+      bodyEl.append(h('div', { class: 'pager' }, h('span', {}, `已显示前 ${entry.rs.rowCount} 行（达到上限），请增加最大行数或使用 LIMIT。`)));
+    }
+  } else {
+    bodyEl.append(renderMessages(tab));
+  }
+}
+
+function renderMessages(tab) {
+  const list = h('div', { class: 'message-list' });
+  if (!tab.results.length && !tab.error) {
+    list.append(h('div', { class: 'empty-state compact' }, h('span', { html: icon('terminal') }), h('h3', {}, '还没有执行结果'), h('p', {}, '按 ⌘↩ 运行 SQL，结果将显示在这里。')));
+    return list;
+  }
+  tab.results.forEach((rs) => {
+    const line = rs.columns?.length
+      ? `${rs.rowCount} 行返回${rs.truncated ? '（截断）' : ''}`
+      : (rs.message || `${rs.affected} 行受影响`);
+    list.append(h('div', { class: 'message-row ok' },
+      h('span', { class: 'idx' }, String(rs.index)),
+      h('span', { class: 'msg', title: rs.statement }, firstLine(rs.statement) + ' — ' + line),
+      h('span', { class: 'time' }, formatMs(rs.durationMs)),
+    ));
+  });
+  if (tab.error) {
+    list.append(h('div', { class: 'message-row err' }, h('span', { class: 'idx' }, '!'), h('span', { class: 'msg' }, tab.error)));
+  }
+  return list;
+}
+
+function firstLine(text) {
+  if (!text) return '';
+  const line = text.trim().split('\n')[0];
+  return line.length > 110 ? line.slice(0, 110) + '…' : line;
+}
+
+async function completionsFor(tab, word, value, pos) {
+  const items = [];
+  const lower = word.toLowerCase();
+  for (const kw of KEYWORDS) {
+    if (kw.toLowerCase().startsWith(lower)) items.push({ label: kw, kind: 'keyword' });
+  }
+  const conn = connById(tab.connId);
+  let objects = [];
+  if (conn && tab.db) {
+    const cs = connState(conn.id);
+    if (!cs.objects.has(tab.db)) {
+      try {
+        const sid = await ensureTreeSession(conn.id);
+        const list = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(tab.db)}`);
+        cs.objects.set(tab.db, list);
+      } catch { /* ignore */ }
+    }
+    objects = cs.objects.get(tab.db) || [];
+    for (const o of objects) {
+      if (o.name.toLowerCase().startsWith(lower)) items.push({ label: o.name, kind: 'table', detail: o.type === 'VIEW' ? 'view' : 'table' });
+    }
+  }
+  for (const table of referencedTables(value)) {
+    for (const col of await columnsFor(tab, table)) {
+      if (col.name.toLowerCase().startsWith(lower)) items.push({ label: col.name, kind: 'column', detail: table });
+    }
+  }
+  const seen = new Set();
+  return items.filter((it) => {
+    const k = it.kind + ':' + it.label;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function referencedTables(sql) {
+  const out = new Set();
+  const re = /\b(?:from|join|update|into)\s+`?([A-Za-z0-9_$]+)`?/gi;
+  let m;
+  while ((m = re.exec(sql)) !== null) out.add(m[1]);
+  return [...out].slice(0, 4);
+}
+
+const columnCache = new Map();
+
+async function columnsFor(tab, table) {
+  const key = tab.connId + '/' + tab.db + '/' + table;
+  if (columnCache.has(key)) return columnCache.get(key);
+  try {
+    const sid = await ensureTabSession(tab);
+    const detail = await apiGet(`/api/table?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(tab.db)}&table=${encodeURIComponent(table)}`);
+    const cols = detail.columns || [];
+    columnCache.set(key, cols);
+    return cols;
+  } catch {
+    return [];
+  }
+}
+
+function bindVerticalSplitter(splitter, editorShell, root) {
+  splitter.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = editorShell.getBoundingClientRect().height;
+    const onMove = (ev) => {
+      const hNew = Math.max(90, Math.min(root.clientHeight - 140, startH + ev.clientY - startY));
+      editorShell.style.height = hNew + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function bindSidebarResize() {
+  const grip = $('#sidebar-resizer');
+  grip.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = $('#sidebar').getBoundingClientRect().width;
+    const onMove = (ev) => {
+      const w = Math.max(210, Math.min(460, startW + ev.clientX - startX));
+      document.documentElement.style.setProperty('--sidebar-w', w + 'px');
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function bindShortcuts() {
+  window.addEventListener('keydown', (e) => {
+    const meta = e.metaKey || e.ctrlKey;
+    if (!meta) return;
+    const key = e.key.toLowerCase();
+    if (key === 'enter') return;
+    if (key === 't') { e.preventDefault(); newQueryFromContext(); }
+    else if (key === 'n') { e.preventDefault(); openConnectionDialog(); }
+    else if (key === 'w') { e.preventDefault(); const t = activeTab(); if (t) closeTab(t.id); }
+    else if (key === 'k') { e.preventDefault(); openHistory(); }
+  });
+}
+
+function ident(name) {
+  return '`' + String(name).replaceAll('`', '``') + '`';
+}
+
+/* ------------------------------------------------------------------ */
+/* table tab                                                          */
+/* ------------------------------------------------------------------ */
+
+function openTable(connId, db, table) {
+  const existing = S.tabs.find((t) => t.kind === 'table' && t.connId === connId && t.db === db && t.table === table);
+  if (existing) { activateTab(existing.id); return existing; }
+  const tab = addTab('table', { connId, db, table, title: table });
+  buildTableTab(tab);
+  return tab;
+}
+
+function buildTableTab(tab) {
+  tab.view = 'data';
+  tab.page = 0;
+  tab.pageSize = S.settings.pageSize;
+  tab.order = [];
+  tab.filters = [];
+  tab.detail = null;
+  tab.rowsData = null;
+  tab.loadingRows = false;
+  tab.rowsError = '';
+  tab.loadSeq = 0;
+
+  const root = h('div', { class: 'tt' });
+  const title = h('div', { class: 'tt-title' },
+    h('span', { class: 'name' }, tab.table),
+    h('span', { class: 'path' }, tab.db),
+  );
+  const badges = h('div', { class: 'tt-badges' });
+  const actions = h('div', { class: 'tt-actions' });
+  const head = h('div', { class: 'tt-head' }, title, badges, actions);
+  const subtabs = h('div', { class: 'tt-subtabs' });
+  const content = h('div', { class: 'tt-content' });
+  root.append(head, subtabs, content);
+  tab.el.append(root);
+  tab.badgesEl = badges;
+  tab.actionsEl = actions;
+  tab.contentEl = content;
+  tab.subtabsEl = subtabs;
+
+  for (const [key, label] of [['data', '数据'], ['structure', '结构'], ['ddl', 'DDL']]) {
+    const b = h('button', { class: 'tt-subtab' + (key === tab.view ? ' active' : '') }, label);
+    b.dataset.view = key;
+    b.addEventListener('click', () => { tab.view = key; renderSubtabs(tab); renderTableContent(tab); });
+    subtabs.append(b);
+  }
+
+  renderTableActions(tab);
+  renderTableContent(tab);
+  loadTableDetail(tab);
+  loadTableRows(tab);
+}
+
+function renderSubtabs(tab) {
+  tab.subtabsEl.querySelectorAll('.tt-subtab').forEach((b) => b.classList.toggle('active', b.dataset.view === tab.view));
+}
+
+function renderTableActions(tab) {
+  const host = tab.actionsEl;
+  host.innerHTML = '';
+  const isView = tab.detail?.type === 'VIEW' || tab.rowsData?.type === 'VIEW';
+  const refresh = h('button', { class: 'btn ghost sm icon', title: '刷新', html: icon('refresh'), onClick: () => { loadTableDetail(tab); loadTableRows(tab); } });
+  const exportBtn = h('button', { class: 'btn sm', title: '导出 CSV', html: icon('download') + '<span>导出</span>', onClick: () => exportTable(tab) });
+  host.append(refresh, exportBtn);
+  if (!isView) {
+    host.append(
+      h('button', { class: 'btn sm', title: '插入行', html: icon('plus') + '<span>插入</span>', onClick: () => addRowDialog(tab) }),
+      h('button', { class: 'btn sm', title: '删除选中行', html: icon('trash'), onClick: () => deleteSelectedRow(tab) }),
+    );
+  }
+}
+
+async function loadTableDetail(tab) {
+  try {
+    tab.detail = await withTabSession(tab, (sid) => apiGet(`/api/table?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(tab.db)}&table=${encodeURIComponent(tab.table)}`));
+    renderTableHead(tab);
+    renderTableActions(tab);
+    renderTableContent(tab);
+  } catch (err) {
+    toast(err.message, 'err', 6000);
+  }
+}
+
+function renderTableHead(tab) {
+  const d = tab.detail;
+  const r = tab.rowsData;
+  const type = d?.type || r?.type || 'TABLE';
+  const engine = d?.engine || r?.engine || '';
+  const rows = d?.rows ?? null;
+  const comment = d?.comment || r?.comment || '';
+  tab.badgesEl.innerHTML = '';
+  tab.badgesEl.append(h('span', { class: 'badge ' + (type === 'VIEW' ? 'view' : 'table') }, type === 'VIEW' ? 'VIEW' : 'TABLE'));
+  if (engine) tab.badgesEl.append(h('span', { class: 'badge engine' }, engine));
+  if (rows) tab.badgesEl.append(h('span', { class: 'badge engine' }, '~' + formatNumber(rows) + ' 行'));
+  if (comment) tab.badgesEl.append(h('span', { class: 'badge engine', title: comment }, comment.length > 18 ? comment.slice(0, 18) + '…' : comment));
+}
+
+async function loadTableRows(tab) {
+  const seq = ++tab.loadSeq;
+  tab.loadingRows = true;
+  tab.rowsError = '';
+  if (!tab.rowsData) renderTableContent(tab);
+  try {
+    const body = {
+      database: tab.db,
+      table: tab.table,
+      limit: tab.pageSize,
+      offset: tab.page * tab.pageSize,
+      orderBy: tab.order,
+      filters: tab.filters,
+      count: tab.page === 0,
+    };
+    const res = await withTabSession(tab, (sid) => apiPost('/api/rows', { ...body, session: sid }));
+    if (seq !== tab.loadSeq) return;
+    tab.rowsData = res;
+    if (res.total !== null && res.total !== undefined) tab.total = res.total;
+    renderTableHead(tab);
+    renderTableActions(tab);
+    setStatus(connById(tab.connId)?.name, tab.db, `${formatMs(res.durationMs)} · ${formatNumber(res.rows.length)} 行`,
+      tab.total !== undefined && tab.total !== null ? `共 ${formatNumber(tab.total)} 行` : '');
+  } catch (err) {
+    if (seq !== tab.loadSeq) return;
+    tab.rowsError = err.message;
+    toast(err.message, 'err', 6000);
+  } finally {
+    if (seq === tab.loadSeq) {
+      tab.loadingRows = false;
+      renderTableContent(tab);
+    }
+  }
+}
+
+function renderTableContent(tab) {
+  tab.contentEl.innerHTML = '';
+  if (tab.view === 'data') renderTableData(tab);
+  else if (tab.view === 'structure') renderTableStructure(tab);
+  else renderTableDDL(tab);
+}
+
+function renderTableData(tab) {
+  const r = tab.rowsData;
+  if (tab.loadingRows && !r) {
+    tab.contentEl.append(h('div', { class: 'loading-row' }, h('span', { class: 'spinner' }), '加载数据…'));
+    return;
+  }
+  if (!r) {
+    tab.contentEl.append(h('div', { class: 'empty-state compact' },
+      h('span', { html: icon('table') }),
+      h('h3', {}, tab.rowsError ? '加载失败' : '没有数据'),
+      h('p', {}, tab.rowsError || '这张表暂时没有可显示的行。')));
+    return;
+  }
+  tab.contentEl.append(buildFilterBar(tab));
+
+  const host = h('div', { style: { flex: '1', minHeight: '0' } });
+  tab.contentEl.append(host);
+  const editable = r.primaryKey && r.primaryKey.length > 0 && r.type !== 'VIEW';
+  const grid = new Grid(host, {
+    sortable: true,
+    emptyText: '没有行',
+    onSort: (col, dir) => {
+      tab.order = dir ? [{ column: col, desc: dir === 'desc' }] : [];
+      tab.page = 0;
+      loadTableRows(tab);
+    },
+    onEdit: (row, col, value) => updateCell(tab, row, col, value),
+    onDeleteRow: (row) => deleteRow(tab, row),
+    canEdit: () => editable,
+  });
+  tab.grid = grid;
+  grid.setData({
+    columns: r.columns,
+    rows: r.rows,
+    pk: r.primaryKey || [],
+    sort: tab.order[0] ? { column: tab.order[0].column, desc: tab.order[0].desc } : null,
+    editable,
+    emptyText: '没有行',
+  });
+  tab.contentEl.append(buildPager(tab));
+}
+
+function buildFilterBar(tab) {
+  const bar = h('div', { class: 'filter-bar' });
+  const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
+  const colSel = h('select', { title: '字段' }, ...cols.map((c) => h('option', { value: c }, c)));
+  const ops = [['=', '='], ['!=', '≠'], ['>', '>'], ['>=', '≥'], ['<', '<'], ['<=', '≤'], ['contains', '包含'], ['starts', '开头是'], ['ends', '结尾是'], ['is null', '为空'], ['is not null', '不为空']];
+  const opSel = h('select', { title: '条件' }, ...ops.map(([v, l]) => h('option', { value: v }, l)));
+  const valInput = h('input', { placeholder: '值', spellcheck: 'false' });
+  const addBtn = h('button', { class: 'btn sm', html: icon('plus') + '<span>筛选</span>' });
+  const apply = () => {
+    const column = colSel.value;
+    const op = opSel.value;
+    const value = valInput.value;
+    if (!column) return;
+    if (!['is null', 'is not null'].includes(op) && value === '') { toast('请输入筛选值', 'warn', 1800); return; }
+    tab.filters.push({ column, op, value });
+    tab.page = 0;
+    loadTableRows(tab);
+  };
+  addBtn.addEventListener('click', apply);
+  valInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
+  opSel.addEventListener('change', () => {
+    valInput.disabled = ['is null', 'is not null'].includes(opSel.value);
+  });
+  bar.append(colSel, opSel, valInput, addBtn);
+  for (const [i, f] of tab.filters.entries()) {
+    const chip = h('span', { class: 'filter-chip' },
+      h('b', {}, f.column), ' ' + opLabel(f.op) + (f.value ? ' ' + escapeHtml(f.value) : ''),
+      h('button', { title: '移除', html: icon('x'), onClick: () => { tab.filters.splice(i, 1); tab.page = 0; loadTableRows(tab); } }),
+    );
+    bar.append(chip);
+  }
+  bar.append(h('span', { class: 'flex-1' }));
+  if (tab.filters.length) {
+    bar.append(h('button', { class: 'link-btn', onClick: () => { tab.filters = []; tab.page = 0; loadTableRows(tab); } }, '清除筛选'));
+  }
+  return bar;
+}
+
+function opLabel(op) {
+  return { contains: '包含', starts: '开头是', ends: '结尾是', 'is null': '为空', 'is not null': '不为空', '!=': '≠', '>=': '≥', '<=': '≤' }[op] || op;
+}
+
+function buildPager(tab) {
+  const r = tab.rowsData;
+  const offset = tab.page * tab.pageSize;
+  const shown = r?.rows.length || 0;
+  const pager = h('div', { class: 'pager' });
+  const prev = h('button', { class: 'btn ghost sm icon', title: '上一页', html: icon('chevron-left'), disabled: tab.page === 0, onClick: () => { tab.page = Math.max(0, tab.page - 1); loadTableRows(tab); } });
+  const next = h('button', { class: 'btn ghost sm icon', title: '下一页', html: icon('chevron-right'), disabled: !(r?.truncated), onClick: () => { tab.page++; loadTableRows(tab); } });
+  const sizeSel = h('select', { title: '每页行数' }, ...[50, 100, 200, 500, 1000].map((n) => h('option', { value: String(n) }, `${n} 行/页`)));
+  sizeSel.value = String(tab.pageSize);
+  sizeSel.addEventListener('change', () => { tab.pageSize = Number(sizeSel.value); tab.page = 0; loadTableRows(tab); });
+  pager.append(prev, next);
+  pager.append(h('span', {}, `${shown ? formatNumber(offset + 1) : 0}–${formatNumber(offset + shown)}${tab.total !== undefined && tab.total !== null ? ' / ' + formatNumber(tab.total) : ''}`));
+  pager.append(h('span', { class: 'spacer' }));
+  if (tab.filters.length) pager.append(h('span', { class: 'faint' }, `${tab.filters.length} 个筛选`));
+  pager.append(h('span', { class: 'faint' }, formatMs(r?.durationMs) + ' · '), sizeSel);
+  return pager;
+}
+
+async function updateCell(tab, row, col, value) {
+  const r = tab.rowsData;
+  const rowValues = r.rows[row];
+  const pk = {};
+  for (const key of r.primaryKey || []) {
+    const idx = r.columns.findIndex((c) => c.name === key);
+    pk[key] = rowValues[idx] === null ? null : String(rowValues[idx]);
+  }
+  const column = r.columns[col].name;
+  const res = await apiPost('/api/rows/update', {
+    session: tab.sessionId,
+    database: tab.db,
+    table: tab.table,
+    pk,
+    changes: { [column]: value },
+  });
+  if (!res.affected) throw new Error('没有行被更新（数据可能已被修改）');
+  toast('已更新 1 行', 'ok', 1400);
+}
+
+async function deleteRow(tab, row) {
+  const r = tab.rowsData;
+  const rowValues = r.rows[row];
+  const pk = {};
+  for (const key of r.primaryKey || []) {
+    const idx = r.columns.findIndex((c) => c.name === key);
+    pk[key] = rowValues[idx] === null ? null : String(rowValues[idx]);
+  }
+  const pkText = Object.entries(pk).map(([k, v]) => `${k}=${v === null ? 'NULL' : v}`).join(', ');
+  const ok = await confirmDialog({
+    title: '删除行',
+    message: `确定删除 <code>${escapeHtml(tab.table)}</code> 中主键为 <code>${escapeHtml(pkText)}</code> 的行？此操作不可撤销。`,
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const res = await apiPost('/api/rows/delete', { session: tab.sessionId, database: tab.db, table: tab.table, pk });
+    toast(`已删除 ${res.affected} 行`, 'ok');
+    if (tab.rowsData.rows.length === 1 && tab.page > 0) tab.page--;
+    loadTableRows(tab);
+  } catch (err) {
+    toast(err.message, 'err', 6000);
+  }
+}
+
+async function deleteSelectedRow(tab) {
+  if (!tab.grid) { toast('请先在数据页选择一行', 'warn'); return; }
+  const row = tab.grid.getSelectedRow();
+  if (row < 0) { toast('请先选择一行', 'warn'); return; }
+  await deleteRow(tab, row);
+}
+
+async function addRowDialog(tab) {
+  if (!tab.detail) {
+    try { await loadTableDetail(tab); } catch { /* handled */ }
+  }
+  if (!tab.detail) { toast('表结构尚未加载', 'err'); return; }
+  const cols = tab.detail.columns.filter((c) => !c.autoIncrement && !c.generated);
+  const form = h('div', { class: 'form-grid' });
+  const inputs = new Map();
+  for (const c of cols) {
+    const input = h('input', { class: 'input', value: c.default ?? '', placeholder: c.nullable ? 'NULL' : '', spellcheck: 'false' });
+    inputs.set(c.name, input);
+    form.append(h('div', { class: 'field' + (c.dataType.includes('text') || c.dataType.includes('json') ? ' span2' : '') },
+      h('label', { title: c.columnType }, c.name + ' · ' + c.dataType),
+      input,
+      h('span', { class: 'hint' }, (c.nullable ? 'NULL 允许' : 'NOT NULL') + (c.default !== null && c.default !== undefined ? ' · 默认 ' + c.default : '')),
+    ));
+  }
+  const m = openModal({ title: '插入行', subtitle: tab.db + '.' + tab.table, body: form, wide: true });
+  const save = h('button', { class: 'btn primary' }, '插入');
+  const cancel = h('button', { class: 'btn' }, '取消');
+  cancel.addEventListener('click', () => m.close());
+  save.addEventListener('click', async () => {
+    const values = {};
+    for (const [name, input] of inputs) {
+      const col = cols.find((c) => c.name === name);
+      const raw = input.value;
+      if (raw === '' && col.default !== null && col.default !== undefined) continue;
+      values[name] = raw === '' && col.nullable ? null : raw;
+    }
+    try {
+      save.disabled = true;
+      const res = await apiPost('/api/rows/insert', { session: tab.sessionId, database: tab.db, table: tab.table, values });
+      toast('已插入 1 行' + (res.insertId ? '（id=' + res.insertId + '）' : ''), 'ok');
+      m.close();
+      loadTableRows(tab);
+    } catch (err) {
+      toast(err.message, 'err', 6000);
+      save.disabled = false;
+    }
+  });
+  m.footer.append(h('span', { class: 'spacer' }), cancel, save);
+  setTimeout(() => form.querySelector('input')?.focus(), 50);
+}
+
+async function exportTable(tab) {
+  try {
+    const sid = await ensureTabSession(tab);
+    const res = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'X-NavMini-Token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session: sid, database: tab.db, table: tab.table,
+        orderBy: tab.order, filters: tab.filters,
+      }),
+    });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    downloadBlob(blob, `${tab.db}.${tab.table}.csv`);
+    toast('已导出 CSV', 'ok');
+  } catch (err) {
+    toast(err.message, 'err', 6000);
+  }
+}
+
+function renderTableStructure(tab) {
+  const d = tab.detail;
+  if (!d) {
+    tab.contentEl.append(h('div', { class: 'loading-row' }, h('span', { class: 'spinner' }), '加载表结构…'));
+    return;
+  }
+  const wrap = h('div', { class: 'struct' });
+  const info = h('div', { class: 'kv-grid' });
+  const kv = (k, v) => h('div', { class: 'kv-row' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v ?? '—'));
+  info.append(
+    kv('数据库', d.database), kv('类型', d.type), kv('引擎', d.engine || '—'),
+    kv('估算行数', formatNumber(d.rows)), kv('数据长度', formatBytes(d.dataLength)),
+    kv('索引长度', formatBytes(d.indexLength)), kv('主键', (d.primaryKey || []).join(', ') || '—'),
+    kv('注释', d.comment || '—'),
+  );
+  wrap.append(h('h4', {}, '表信息'), info);
+
+  const colTable = h('table', { class: 'struct-table' });
+  colTable.innerHTML = `<thead><tr>
+    <th>#</th><th>列名</th><th>类型</th><th>NULL</th><th>默认</th><th>键</th><th>额外</th><th>注释</th>
+  </tr></thead><tbody>${d.columns.map((c) => `<tr>
+    <td class="dim">${c.position}</td>
+    <td class="col-name">${escapeHtml(c.name)}</td>
+    <td class="type">${escapeHtml(c.columnType)}</td>
+    <td>${c.nullable ? 'YES' : '<span class="dim">NO</span>'}</td>
+    <td class="dim">${c.default === null || c.default === undefined ? '<i>NULL</i>' : escapeHtml(String(c.default))}</td>
+    <td>${c.primaryKey ? '<span class="pill pk">PK</span>' : ''}${c.key && !c.primaryKey ? escapeHtml(c.key) : ''}</td>
+    <td class="dim">${escapeHtml(c.extra || '')}</td>
+    <td class="dim">${escapeHtml(c.comment || '')}</td>
+  </tr>`).join('')}</tbody>`;
+  wrap.append(h('h4', {}, `列 · ${d.columns.length}`), colTable);
+
+  if (d.indexes?.length) {
+    const idxTable = h('table', { class: 'struct-table' });
+    idxTable.innerHTML = `<thead><tr><th>索引</th><th>唯一</th><th>类型</th><th>列</th></tr></thead><tbody>${d.indexes.map((i) => `<tr>
+      <td class="col-name">${escapeHtml(i.name)}</td><td>${i.unique ? '是' : '否'}</td>
+      <td class="dim">${escapeHtml(i.type || '')}</td><td class="mono">${escapeHtml(i.columns.join(', '))}</td>
+    </tr>`).join('')}</tbody>`;
+    wrap.append(h('h4', {}, `索引 · ${d.indexes.length}`), idxTable);
+  }
+
+  if (d.foreignKeys?.length) {
+    const fkTable = h('table', { class: 'struct-table' });
+    fkTable.innerHTML = `<thead><tr><th>外键</th><th>列</th><th>引用</th><th>更新</th><th>删除</th></tr></thead><tbody>${d.foreignKeys.map((f) => `<tr>
+      <td class="col-name">${escapeHtml(f.name)}</td><td>${escapeHtml(f.column)}</td>
+      <td class="mono">${escapeHtml(f.refSchema + '.' + f.refTable + '.' + f.refColumn)}</td>
+      <td class="dim">${escapeHtml(f.onUpdate || '')}</td><td class="dim">${escapeHtml(f.onDelete || '')}</td>
+    </tr>`).join('')}</tbody>`;
+    wrap.append(h('h4', {}, `外键 · ${d.foreignKeys.length}`), fkTable);
+  }
+  tab.contentEl.append(wrap);
+}
+
+function renderTableDDL(tab) {
+  const d = tab.detail;
+  if (!d) {
+    tab.contentEl.append(h('div', { class: 'loading-row' }, h('span', { class: 'spinner' }), '加载 DDL…'));
+    return;
+  }
+  if (!d.ddl) {
+    tab.contentEl.append(h('div', { class: 'empty-state compact' }, h('h3', {}, '无法读取 DDL'), h('p', {}, '当前账号可能没有 SHOW CREATE 权限。')));
+    return;
+  }
+  const wrap = h('div', { class: 'ddl-wrap' });
+  const actions = h('div', { class: 'ddl-actions' },
+    h('button', { class: 'btn sm', html: icon('copy') + '<span>复制</span>', onClick: () => copyText(d.ddl) }),
+    h('button', { class: 'btn sm', html: icon('download') + '<span>下载 .sql</span>', onClick: () => downloadText(d.ddl, `${tab.db}.${tab.table}.sql`, 'text/plain;charset=utf-8') }),
+    h('button', { class: 'btn sm', html: icon('terminal') + '<span>在查询中打开</span>', onClick: () => openQuery(tab.connId, tab.db, d.ddl) }),
+  );
+  wrap.append(actions, h('pre', { class: 'ddl' }, d.ddl));
+  tab.contentEl.append(wrap);
+}
+
+/* ------------------------------------------------------------------ */
+/* monitor                                                            */
+/* ------------------------------------------------------------------ */
+
+function openMonitor() {
+  const tab0 = activeTab();
+  const connId = tab0?.connId || S.connections[0]?.id;
+  if (!connId) { toast('请先新建一个连接', 'warn'); openConnectionDialog(); return; }
+  const existing = S.tabs.find((t) => t.kind === 'monitor' && t.connId === connId);
+  if (existing) { activateTab(existing.id); return existing; }
+  const tab = addTab('monitor', { connId, title: '服务器监控' });
+  buildMonitorTab(tab);
+  return tab;
+}
+
+function buildMonitorTab(tab) {
+  const conn = connById(tab.connId);
+  const root = h('div', { class: 'monitor' });
+  const auto = h('input', { type: 'checkbox' });
+  const refreshBtn = h('button', { class: 'btn sm', html: icon('refresh') + '<span>刷新</span>' });
+  const cards = h('div', { class: 'monitor-cards' });
+  const procPanel = h('div', { class: 'panel' });
+  const statusPanel = h('div', { class: 'panel' });
+  const varPanel = h('div', { class: 'panel' });
+  root.append(
+    h('div', { class: 'monitor-head' },
+      h('h2', {}, '服务器监控'),
+      h('span', { class: 'conn-chip' }, h('span', { class: 'dot' }), conn?.name || 'MySQL'),
+      h('span', { class: 'flex-1' }),
+      h('label', { class: 'faint', style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px' } }, auto, '每 5 秒自动刷新'),
+      refreshBtn,
+    ),
+    cards, procPanel, statusPanel, varPanel,
+  );
+  tab.el.append(root);
+
+  const load = async () => {
+    try {
+      const sid = await ensureTabSession(tab);
+      const [list, status] = await Promise.all([
+        apiGet('/api/processlist?session=' + encodeURIComponent(sid)),
+        apiGet('/api/status?session=' + encodeURIComponent(sid)),
+      ]);
+      renderMonitor(tab, list, status, cards, procPanel, statusPanel, varPanel);
+    } catch (err) {
+      toast(err.message, 'err', 6000);
+    }
+  };
+  refreshBtn.addEventListener('click', load);
+  let timer = null;
+  const setTimer = () => {
+    clearInterval(timer);
+    timer = auto.checked ? setInterval(load, 5000) : null;
+  };
+  auto.addEventListener('change', setTimer);
+  tab.dispose = () => clearInterval(timer);
+  load();
+}
+
+function renderMonitor(tab, list, status, cards, procPanel, statusPanel, varPanel) {
+  const map = Object.fromEntries((status.status || []).map((s) => [s.name, s.value]));
+  const num = (k) => Number(map[k] || 0);
+  const qps = status.uptime ? (status.queries / status.uptime) : 0;
+  const hit = num('Innodb_buffer_pool_read_requests') > 0
+    ? (1 - num('Innodb_buffer_pool_reads') / num('Innodb_buffer_pool_read_requests')) * 100
+    : 0;
+  const uptime = formatUptime(status.uptime);
+  cards.innerHTML = '';
+  const metric = (label, value, sub) => h('div', { class: 'metric' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), sub ? h('div', { class: 'sub' }, sub) : null);
+  cards.append(
+    metric('连接数', formatNumber(num('Threads_connected')), `运行中 ${formatNumber(num('Threads_running'))}`),
+    metric('查询/秒', qps.toFixed(1), `累计 ${formatNumber(status.queries)}`),
+    metric('运行时间', uptime, `版本 ${tab.server?.version || '—'}`),
+    metric('慢查询', formatNumber(num('Slow_queries')), 'Slow_queries'),
+    metric('缓冲池命中', hit.toFixed(1) + '%', 'InnoDB buffer pool'),
+    metric('流量', formatBytes(num('Bytes_received') + num('Bytes_sent')), `接收 ${formatBytes(num('Bytes_received'))}`),
+  );
+
+  procPanel.innerHTML = '';
+  const phead = h('div', { class: 'panel-head' }, `进程列表 · ${list.length}`, h('span', { class: 'spacer' }));
+  procPanel.append(phead);
+  const pt = h('table', { class: 'mtable' });
+  pt.innerHTML = `<thead><tr><th>Id</th><th>用户</th><th>主机</th><th>数据库</th><th>命令</th><th class="num">时间</th><th>状态</th><th>SQL</th><th></th></tr></thead>
+    <tbody>${list.map((p) => `<tr>
+      <td class="mono">${p.id}</td><td>${escapeHtml(p.user)}</td><td class="mono">${escapeHtml(p.host)}</td>
+      <td>${escapeHtml(p.db || '')}</td><td>${escapeHtml(p.command)}</td>
+      <td class="num">${p.time}s</td><td class="dim">${escapeHtml(p.state || '')}</td>
+      <td class="sql" title="${escapeHtml(p.info || '')}">${escapeHtml(p.info || '')}</td>
+      <td><button class="btn ghost sm" data-kill="${p.id}" title="终止连接">终止</button></td>
+    </tr>`).join('')}</tbody>`;
+  pt.querySelectorAll('[data-kill]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.kill);
+      const ok = await confirmDialog({ title: '终止连接', message: `确定终止连接 <code>${id}</code>？`, confirmText: '终止', danger: true });
+      if (!ok) return;
+      try {
+        await apiPost('/api/processlist/kill', { session: tab.sessionId, id });
+        toast('已发送 KILL', 'ok');
+        buildMonitorTabRefresh(tab);
+      } catch (err) { toast(err.message, 'err', 5000); }
+    });
+  });
+  procPanel.append(pt);
+
+  const vars = Object.fromEntries((status.variables || []).map((v) => [v.name, v.value]));
+  statusPanel.innerHTML = '';
+  statusPanel.append(h('div', { class: 'panel-head' }, '状态变量', h('span', { class: 'spacer' }), h('span', {}, 'GLOBAL STATUS')));
+  const sg = h('div', { class: 'kv-grid', style: { padding: '10px 12px' } });
+  for (const s of status.status || []) sg.append(h('div', { class: 'kv-row' }, h('span', { class: 'k' }, s.name), h('span', { class: 'v' }, s.value)));
+  statusPanel.append(sg);
+
+  varPanel.innerHTML = '';
+  varPanel.append(h('div', { class: 'panel-head' }, '服务器变量', h('span', { class: 'spacer' }), h('span', {}, 'SHOW VARIABLES')));
+  const vg = h('div', { class: 'kv-grid', style: { padding: '10px 12px' } });
+  for (const v of status.variables || []) vg.append(h('div', { class: 'kv-row' }, h('span', { class: 'k' }, v.name), h('span', { class: 'v', title: v.value }, v.value)));
+  varPanel.append(vg);
+}
+
+function buildMonitorTabRefresh(tab) {
+  // Reload only the process list by triggering a click on the refresh button.
+  const root = tab.el.querySelector('.monitor');
+  const btn = root?.querySelector('.monitor-head .btn');
+  if (btn) btn.click();
+}
+
+function formatUptime(sec) {
+  sec = Number(sec) || 0;
+  const d = Math.floor(sec / 86400);
+  const hh = Math.floor((sec % 86400) / 3600);
+  const mm = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d} 天 ${hh} 时`;
+  if (hh > 0) return `${hh} 时 ${mm} 分`;
+  return `${mm} 分`;
+}
+
+/* ------------------------------------------------------------------ */
+/* connection dialog                                                  */
+/* ------------------------------------------------------------------ */
+
+function openConnectionDialog(conn = null) {
+  const editing = !!conn;
+  const draft = conn ? JSON.parse(JSON.stringify(conn)) : {
+    id: '', name: '', group: '', color: '#33c9a4', host: '127.0.0.1', port: 3306, user: 'root',
+    database: '', charset: 'utf8mb4', sslMode: 'preferred', timeout: 10, remark: '',
+    ssh: { enabled: false, host: '', port: 22, user: '', auth: 'password', keyPath: '', hasPassword: false },
+  };
+  draft.ssh = draft.ssh || { enabled: false, port: 22, auth: 'password', keyPath: '' };
+
+  const name = h('input', { class: 'input', value: draft.name, placeholder: '例如：本地开发库' });
+  const group = h('input', { class: 'input', value: draft.group, placeholder: '可选分组' });
+  const host = h('input', { class: 'input', value: draft.host });
+  const port = h('input', { class: 'input', type: 'number', value: draft.port });
+  const user = h('input', { class: 'input', value: draft.user });
+  const password = h('input', { class: 'input', type: 'password', placeholder: draft.hasPassword ? '已保存，留空保持不变' : '密码' });
+  const database = h('input', { class: 'input', value: draft.database, placeholder: '可选，默认数据库' });
+  const charset = h('input', { class: 'input', value: draft.charset || 'utf8mb4' });
+  const sslMode = h('select', { class: 'input' },
+    h('option', { value: 'preferred' }, 'Preferred（优先 TLS）'),
+    h('option', { value: 'required' }, 'Required（强制 TLS）'),
+    h('option', { value: 'skip-verify' }, 'Skip Verify（不校验证书）'),
+    h('option', { value: 'disabled' }, 'Disabled（不使用 TLS）'));
+  sslMode.value = draft.sslMode || 'preferred';
+  const timeout = h('input', { class: 'input', type: 'number', value: draft.timeout || 10 });
+  const remark = h('textarea', { class: 'input', rows: 2, placeholder: '备注' });
+  remark.value = draft.remark || '';
+
+  const form = h('div');
+  form.append(h('div', { class: 'form-grid' },
+    field('连接名称', name),
+    field('分组', group),
+    field('主机', host),
+    field('端口', port),
+    field('用户名', user),
+    field('密码', password),
+    field('默认数据库', database),
+    field('字符集', charset),
+    field('SSL 模式', sslMode),
+    field('连接超时（秒）', timeout),
+    h('div', { class: 'field span2' }, h('label', {}, '备注'), remark),
+  ));
+
+  // color row
+  const colors = ['#33c9a4', '#6aa9ff', '#f0a35e', '#c792ea', '#f06a6a', '#8bd49c'];
+  let chosenColor = draft.color || colors[0];
+  const swatches = h('div', { class: 'color-swatches' });
+  for (const c of colors) {
+    const sw = h('span', { class: 'color-swatch' + (c === chosenColor ? ' active' : ''), style: { background: c }, title: c });
+    sw.addEventListener('click', () => {
+      chosenColor = c;
+      swatches.querySelectorAll('.color-swatch').forEach((el) => el.classList.toggle('active', el === sw));
+    });
+    swatches.append(sw);
+  }
+  form.append(h('div', { class: 'field' }, h('label', {}, '标识颜色'), swatches));
+
+  // SSH
+  const sshEnabled = h('input', { type: 'checkbox', checked: !!draft.ssh.enabled });
+  const sshBody = h('div');
+  const sshHost = h('input', { class: 'input', value: draft.ssh.host || '', placeholder: 'ssh.example.com' });
+  const sshPort = h('input', { class: 'input', type: 'number', value: draft.ssh.port || 22 });
+  const sshUser = h('input', { class: 'input', value: draft.ssh.user || '' });
+  const sshAuth = h('select', { class: 'input' },
+    h('option', { value: 'password' }, '密码'),
+    h('option', { value: 'key' }, '私钥文件'),
+    h('option', { value: 'agent' }, 'ssh-agent'));
+  sshAuth.value = draft.ssh.auth || 'password';
+  const sshPassword = h('input', { class: 'input', type: 'password', placeholder: draft.ssh.hasPassword ? '已保存，留空保持不变' : 'SSH 密码 / 私钥口令' });
+  const sshKey = h('input', { class: 'input', value: draft.ssh.keyPath || '', placeholder: '~/.ssh/id_ed25519' });
+  const sshPassField = h('div', { class: 'field' }, h('label', {}, 'SSH 密码'), sshPassword);
+  const sshKeyField = h('div', { class: 'field' }, h('label', {}, '私钥路径'), sshKey);
+  const applyAuth = () => {
+    sshPassField.classList.toggle('hidden', sshAuth.value === 'agent' || sshAuth.value === 'key');
+    sshKeyField.classList.toggle('hidden', sshAuth.value !== 'key');
+  };
+  sshAuth.addEventListener('change', applyAuth);
+  applyAuth();
+  sshBody.append(h('div', { class: 'form-grid' },
+    field('SSH 主机', sshHost),
+    field('SSH 端口', sshPort),
+    field('SSH 用户', sshUser),
+    field('认证方式', sshAuth),
+    sshPassField,
+    sshKeyField,
+  ));
+  sshBody.append(h('p', { class: 'hint', style: { marginTop: '0' } }, '通过本地端口转发连接 MySQL；SSH 主机密钥在首次连接时自动信任。'));
+  const sshSection = h('div', { class: 'section' },
+    h('div', { class: 'section-title' },
+      h('span', {}, 'SSH 隧道'),
+      h('span', { class: 'spacer' }),
+      h('label', { class: 'toggle' }, h('span', { class: 'switch' }, sshEnabled, h('span')), '启用'),
+    ),
+    sshBody,
+  );
+  const syncSSH = () => sshBody.classList.toggle('hidden', !sshEnabled.checked);
+  sshEnabled.addEventListener('change', syncSSH);
+  syncSSH();
+  form.append(sshSection);
+
+  const testResult = h('div', { class: 'test-result' });
+  form.append(testResult);
+
+  const m = openModal({ title: editing ? '编辑连接' : '新建连接', subtitle: 'MySQL', body: form, wide: true });
+  const collect = () => {
+    const payload = {
+      id: draft.id || '', name: name.value.trim(), group: group.value.trim(), color: chosenColor,
+      host: host.value.trim(), port: Number(port.value) || 3306, user: user.value.trim(),
+      database: database.value.trim(), charset: charset.value.trim() || 'utf8mb4',
+      sslMode: sslMode.value, timeout: Number(timeout.value) || 10, remark: remark.value,
+      ssh: {
+        enabled: sshEnabled.checked, host: sshHost.value.trim(), port: Number(sshPort.value) || 22,
+        user: sshUser.value.trim(), auth: sshAuth.value, keyPath: sshKey.value.trim(),
+        hasPassword: !!draft.ssh.hasPassword,
+      },
+    };
+    if (password.value) payload.password = password.value;
+    if (sshPassword.value) payload.sshPassword = sshPassword.value;
+    return payload;
+  };
+
+  const testBtn = h('button', { class: 'btn' }, '测试连接');
+  const cancel = h('button', { class: 'btn' }, '取消');
+  const save = h('button', { class: 'btn primary' }, editing ? '保存' : '创建');
+  cancel.addEventListener('click', () => m.close());
+  testBtn.addEventListener('click', async () => {
+    const payload = collect();
+    if (!payload.host || !payload.user) { toast('请填写主机与用户名', 'warn'); return; }
+    testBtn.disabled = true;
+    testResult.className = 'test-result show';
+    testResult.textContent = '正在连接…';
+    try {
+      const res = await apiPost('/api/connections/test', payload);
+      testResult.className = 'test-result show ok';
+      testResult.innerHTML = `<b>连接成功</b> · MySQL ${escapeHtml(res.server?.version || '')} (${escapeHtml(res.server?.edition || '')}) · ${res.latency} ms · ${escapeHtml(res.server?.hostname || '')}`;
+    } catch (err) {
+      testResult.className = 'test-result show err';
+      testResult.textContent = '连接失败：' + err.message;
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
+  save.addEventListener('click', async () => {
+    const payload = collect();
+    if (!payload.host) { toast('请填写主机', 'warn'); return; }
+    if (!payload.user) { toast('请填写用户名', 'warn'); return; }
+    try {
+      save.disabled = true;
+      const saved = await apiPost('/api/connections/save', payload);
+      S.connections = S.connections.filter((c) => c.id !== saved.id);
+      S.connections.push(saved);
+      S.connections.sort((a, b) => (a.group || '').localeCompare(b.group || '') || a.name.localeCompare(b.name));
+      renderTree();
+      const welcome = S.tabs.find((t) => t.kind === 'welcome');
+      if (welcome) renderWelcome(welcome);
+      m.close();
+      toast(editing ? '连接已保存' : '连接已创建', 'ok');
+    } catch (err) {
+      toast(err.message, 'err', 6000);
+      save.disabled = false;
+    }
+  });
+  if (editing) {
+    const del = h('button', { class: 'btn danger' }, '删除');
+    del.addEventListener('click', async () => {
+      m.close();
+      await deleteConnection(conn);
+    });
+    m.footer.append(del);
+  }
+  m.footer.append(h('span', { class: 'spacer' }), testBtn, cancel, save);
+  setTimeout(() => name.focus(), 60);
+}
+
+function field(label, input, hint) {
+  return h('div', { class: 'field' }, h('label', {}, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
+}
+
+/* ------------------------------------------------------------------ */
+/* settings / about / history                                         */
+/* ------------------------------------------------------------------ */
+
+function openSettings() {
+  const theme = h('select', { class: 'input' }, h('option', { value: 'dark' }, '深色'), h('option', { value: 'light' }, '浅色'));
+  theme.value = S.settings.theme;
+  const pageSize = h('input', { class: 'input', type: 'number', value: S.settings.pageSize });
+  const maxRows = h('input', { class: 'input', type: 'number', value: S.settings.maxRows });
+  const fontSize = h('input', { class: 'input', type: 'number', value: S.settings.fontSize });
+  const form = h('div', { class: 'form-grid' },
+    field('主题', theme), field('编辑区字号', fontSize),
+    field('每页行数', pageSize, '表数据浏览的默认分页大小'),
+    field('查询最大行数', maxRows, '单次查询最多返回的行数'),
+  );
+  const m = openModal({ title: '设置', body: form });
+  const save = h('button', { class: 'btn primary' }, '保存');
+  const cancel = h('button', { class: 'btn' }, '取消');
+  cancel.addEventListener('click', () => m.close());
+  save.addEventListener('click', async () => {
+    S.settings = {
+      theme: theme.value,
+      pageSize: Math.max(10, Math.min(5000, Number(pageSize.value) || 200)),
+      maxRows: Math.max(10, Math.min(100000, Number(maxRows.value) || 1000)),
+      fontSize: Math.max(11, Math.min(24, Number(fontSize.value) || 13)),
+    };
+    applyTheme(S.settings.theme);
+    for (const tab of S.tabs) if (tab.editor) applyEditorFont(tab.editor);
+    try { await apiPost('/api/settings', S.settings); toast('设置已保存', 'ok'); } catch (err) { toast(err.message, 'err', 5000); }
+    m.close();
+  });
+  m.footer.append(h('span', { class: 'spacer' }), cancel, save);
+}
+
+function openAbout() {
+  const body = h('div');
+  body.innerHTML = `
+    <div style="display:flex;gap:14px;align-items:center;margin-bottom:14px">
+      <div class="welcome-logo" style="width:46px;height:46px"></div>
+      <div><div style="font-size:18px;font-weight:650">NavMini</div>
+      <div class="faint" style="font-size:11.5px">v${escapeHtml(VERSION)} · 受 Navicat Premium 启发的 MySQL 工作台</div></div>
+    </div>
+    <p class="modal-msg">基于 REA 对 Navicat Premium Lite 17.3.10 的静态构造分析，把「原生外壳 + 核心服务 + 驱动层 + 模块化 UI」压缩为单进程 Go 服务 + WebView 界面。</p>
+    <div class="kv-grid" style="margin-top:12px">
+      <div class="kv-row"><span class="k">后端</span><span class="v">Go · database/sql</span></div>
+      <div class="kv-row"><span class="k">驱动</span><span class="v">go-sql-driver/mysql</span></div>
+      <div class="kv-row"><span class="k">隧道</span><span class="v">golang.org/x/crypto/ssh</span></div>
+      <div class="kv-row"><span class="k">界面</span><span class="v">原生 WKWebView + 单页 UI</span></div>
+      <div class="kv-row"><span class="k">凭据</span><span class="v">AES-256-GCM 本地加密</span></div>
+      <div class="kv-row"><span class="k">分析报告</span><span class="v">docs/navicat-architecture.md</span></div>
+    </div>`;
+  const m = openModal({ title: '关于 NavMini', body });
+  m.footer.append(h('button', { class: 'btn primary', onClick: () => m.close() }, '关闭'));
+}
+
+async function openHistory() {
+  let items = [];
+  try { items = await apiGet('/api/history'); } catch (err) { toast(err.message, 'err', 5000); return; }
+  const body = h('div');
+  const bar = h('div', { style: { display: 'flex', gap: '8px', padding: '2px 4px 8px', alignItems: 'center' } },
+    h('span', { class: 'faint', style: { fontSize: '11px' } }, `${items.length} 条记录`),
+    h('span', { class: 'flex-1' }),
+    h('button', {
+      class: 'btn sm', onClick: async () => {
+        try {
+          await api('/api/history', { method: 'DELETE' });
+          closeDrawer();
+          toast('历史已清空', 'ok');
+        } catch (err) { toast(err.message, 'err', 5000); }
+      },
+    }, '清空'),
+  );
+  body.append(bar);
+  if (!items.length) {
+    body.append(h('div', { class: 'empty-state compact' }, h('span', { html: icon('history') }), h('h3', {}, '还没有查询历史')));
+  }
+  for (const item of items) {
+    const node = h('div', { class: 'history-item' },
+      h('div', { class: 'sql' }, item.sql),
+      h('div', { class: 'meta' },
+        h('span', {}, item.connName || ''),
+        item.database ? h('span', {}, item.database) : null,
+        h('span', { class: item.success ? 'ok' : 'err' }, item.success ? `${item.rows} 行` : '失败'),
+        h('span', {}, formatMs(item.millis)),
+        h('span', { style: { marginLeft: 'auto' } }, timeAgo(item.at)),
+      ),
+    );
+    node.addEventListener('click', () => {
+      const connId = activeTab()?.connId || S.connections[0]?.id;
+      if (!connId) { toast('没有可用连接', 'warn'); return; }
+      closeDrawer();
+      openQuery(connId, item.database || '', item.sql);
+    });
+    body.append(node);
+  }
+  openDrawer({ title: '查询历史', body });
+}
+
+window.__navmini = {
+  newQuery: () => newQueryFromContext(),
+  newConnection: () => openConnectionDialog(),
+  closeTab: () => { const t = activeTab(); if (t) closeTab(t.id); },
+  run: () => { const t = activeTab(); if (t && t.kind === 'query') runQuery(t, false); },
+  history: () => openHistory(),
+  settings: () => openSettings(),
+  about: () => openAbout(),
+};
+
+init();
