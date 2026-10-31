@@ -6,6 +6,7 @@ import {
 import { icon } from './icons.js';
 import { Grid, gridToCSV } from './grid.js';
 import { SQLEditor } from './editor.js';
+import { openAssistant } from './ai.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -58,6 +59,7 @@ function bindStaticIcons() {
   $('#btn-refresh-tree').innerHTML = icon('refresh');
   $('#btn-new-query').innerHTML = icon('plus');
   $('#btn-monitor').innerHTML = icon('activity');
+  $('#btn-ai').innerHTML = icon('sparkles');
   $('#btn-about').innerHTML = icon('info');
   $('#btn-theme').innerHTML = icon('moon');
   $('.search-icon').innerHTML = icon('search');
@@ -68,6 +70,7 @@ function bindChrome() {
   $('#btn-refresh-tree').addEventListener('click', refreshTree);
   $('#btn-new-query').addEventListener('click', () => newQueryFromContext());
   $('#btn-monitor').addEventListener('click', () => openMonitor());
+  $('#btn-ai').addEventListener('click', () => openAIAssistantFromActive());
   $('#btn-about').addEventListener('click', openAbout);
   $('#btn-settings').addEventListener('click', openSettings);
   $('#btn-history').addEventListener('click', openHistory);
@@ -308,6 +311,9 @@ function renderTableNode(conn, db, obj) {
       { label: '打开数据', icon: 'table', action: () => openTable(conn.id, db.name, obj.name) },
       { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, db.name, `SELECT * FROM ${ident(db.name)}.${ident(obj.name)} LIMIT 100;`) },
       { sep: true },
+      { label: '导出 CSV', icon: 'download', action: () => exportTableFromTree(conn.id, db.name, obj.name) },
+      { label: '快速备份到当前库…', icon: 'save', action: () => backupTableFromTree(conn.id, db.name, obj.name) },
+      { sep: true },
       { label: '复制名称', icon: 'copy', action: () => copyText(obj.name) },
     ]);
   });
@@ -528,6 +534,26 @@ function renderWelcome(tab) {
 /* ------------------------------------------------------------------ */
 /* query tab                                                          */
 /* ------------------------------------------------------------------ */
+
+function openAIAssistantFromActive() {
+  const tab = activeTab();
+  const connId = tab?.connId || S.connections[0]?.id;
+  if (!connId) { toast('请先选择连接', 'warn'); openConnectionDialog(); return; }
+  const conn = connById(connId);
+  openAssistant({
+    connId,
+    db: tab?.db || conn?.database || '',
+    selectedTable: tab?.kind === 'table' ? tab.table : '',
+  });
+}
+
+function askAIForRow(tab, row) {
+  const r = tab.rowsData;
+  if (!r || !r.rows[row]) return;
+  const obj = {};
+  for (let i = 0; i < r.columns.length; i++) obj[r.columns[i].name] = r.rows[row][i];
+  openAssistant({ connId: tab.connId, db: tab.db, selectedTable: tab.table, selectedRow: obj });
+}
 
 function newQueryFromContext() {
   const tab = activeTab();
@@ -954,6 +980,11 @@ function renderTableActions(tab) {
   if (!isView) {
     host.append(
       h('button', { class: 'btn sm', title: '插入行', html: icon('plus') + '<span>插入</span>', onClick: () => addRowDialog(tab) }),
+      h('button', { class: 'btn sm', title: '根据选中行生成 SQL', html: icon('code') + '<span>SQL</span>', onClick: () => {
+        const row = tab.grid?.getSelectedRow();
+        if (row < 0) { toast('请先选择一行', 'warn'); return; }
+        generateRowSQL(tab, row, 'insert');
+      } }),
       h('button', { class: 'btn sm', title: '删除选中行', html: icon('trash'), onClick: () => deleteSelectedRow(tab) }),
     );
   }
@@ -1054,6 +1085,8 @@ function renderTableData(tab) {
     },
     onEdit: (row, col, value) => updateCell(tab, row, col, value),
     onDeleteRow: (row) => deleteRow(tab, row),
+    onGenerateSQL: (row, kind) => generateRowSQL(tab, row, kind),
+    onAskAI: (row) => askAIForRow(tab, row),
     canEdit: () => editable,
   });
   tab.grid = grid;
@@ -1070,40 +1103,163 @@ function renderTableData(tab) {
 
 function buildFilterBar(tab) {
   const bar = h('div', { class: 'filter-bar' });
-  const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
-  const colSel = h('select', { title: '字段' }, ...cols.map((c) => h('option', { value: c }, c)));
-  const ops = [['=', '='], ['!=', '≠'], ['>', '>'], ['>=', '≥'], ['<', '<'], ['<=', '≤'], ['contains', '包含'], ['starts', '开头是'], ['ends', '结尾是'], ['is null', '为空'], ['is not null', '不为空']];
-  const opSel = h('select', { title: '条件' }, ...ops.map(([v, l]) => h('option', { value: v }, l)));
-  const valInput = h('input', { placeholder: '值', spellcheck: 'false' });
-  const addBtn = h('button', { class: 'btn sm', html: icon('plus') + '<span>筛选</span>' });
-  const apply = () => {
-    const column = colSel.value;
-    const op = opSel.value;
-    const value = valInput.value;
-    if (!column) return;
-    if (!['is null', 'is not null'].includes(op) && value === '') { toast('请输入筛选值', 'warn', 1800); return; }
-    tab.filters.push({ column, op, value });
-    tab.page = 0;
-    loadTableRows(tab);
-  };
-  addBtn.addEventListener('click', apply);
-  valInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
-  opSel.addEventListener('change', () => {
-    valInput.disabled = ['is null', 'is not null'].includes(opSel.value);
-  });
-  bar.append(colSel, opSel, valInput, addBtn);
-  for (const [i, f] of tab.filters.entries()) {
-    const chip = h('span', { class: 'filter-chip' },
-      h('b', {}, f.column), ' ' + opLabel(f.op) + (f.value ? ' ' + escapeHtml(f.value) : ''),
-      h('button', { title: '移除', html: icon('x'), onClick: () => { tab.filters.splice(i, 1); tab.page = 0; loadTableRows(tab); } }),
-    );
+  const btn = h('button', { class: 'btn sm filter-open', html: icon('filter') + '<span>筛选 / 排序</span>' });
+  btn.addEventListener('click', () => openFilterPanel(tab));
+  bar.append(btn);
+  const total = (tab.filters?.length || 0) + (tab.order?.length || 0);
+  if (total) bar.append(h('span', { class: 'count-badge' }, String(total)));
+  for (const f of tab.filters || []) {
+    const chip = h('span', { class: 'filter-chip', title: '点击编辑筛选' },
+      h('b', {}, f.column), ' ' + opLabel(f.op) + (f.value ? ' ' + escapeHtml(f.value) : '') + (f.value2 ? ' ~ ' + escapeHtml(f.value2) : ''));
+    chip.addEventListener('click', () => openFilterPanel(tab));
     bar.append(chip);
   }
+  for (const [i, o] of (tab.order || []).entries()) {
+    if (i > 0) bar.append(h('span', { class: 'faint', style: { fontSize: '10px' } }, '然后'));
+    bar.append(h('span', { class: 'filter-chip sort-chip' }, h('b', {}, o.column), o.desc ? ' 降序' : ' 升序'));
+  }
   bar.append(h('span', { class: 'flex-1' }));
-  if (tab.filters.length) {
-    bar.append(h('button', { class: 'link-btn', onClick: () => { tab.filters = []; tab.page = 0; loadTableRows(tab); } }, '清除筛选'));
+  if (total) {
+    const clear = h('button', { class: 'link-btn' }, '清除条件');
+    clear.addEventListener('click', () => { tab.filters = []; tab.order = []; tab.page = 0; loadTableRows(tab); });
+    bar.append(clear);
   }
   return bar;
+}
+
+function openFilterPanel(tab) {
+  const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
+  if (!cols.length) { toast('表结构尚未加载', 'warn'); return; }
+  const draft = {
+    filters: (tab.filters || []).map((f) => ({ ...f })),
+    order: (tab.order || []).map((o) => ({ ...o })),
+  };
+  const condBox = h('div', { class: 'fb-list' });
+  const sortBox = h('div', { class: 'fb-list' });
+  const body = h('div', { class: 'fb-body' });
+
+  const ops = [['=', '='], ['!=', '≠'], ['>', '>'], ['>=', '≥'], ['<', '<'], ['<=', '≤'],
+    ['contains', '包含'], ['starts', '开头是'], ['ends', '结尾是'],
+    ['in', 'IN（逗号分隔）'], ['not in', 'NOT IN'], ['between', 'BETWEEN'], ['not between', 'NOT BETWEEN'],
+    ['is null', '为空'], ['is not null', '不为空']];
+
+  const needsValue = (op) => !['is null', 'is not null'].includes(op);
+
+  const renderConditions = () => {
+    condBox.innerHTML = '';
+    if (!draft.filters.length) {
+      condBox.append(h('div', { class: 'faint fb-empty' }, '还没有筛选条件，点击「添加条件」。'));
+      return;
+    }
+    draft.filters.forEach((f, i) => {
+      const colSel = h('select', { class: 'fb-select', title: '字段' }, ...cols.map((c) => h('option', { value: c }, c)));
+      colSel.value = f.column;
+      colSel.addEventListener('change', () => { f.column = colSel.value; });
+      const opSel = h('select', { class: 'fb-select', title: '运算符' }, ...ops.map(([v, l]) => h('option', { value: v }, l)));
+      opSel.value = f.op;
+      const connector = h('select', { class: 'fb-select fb-connector', title: '与上一条件的连接' },
+        h('option', { value: 'and' }, 'AND'), h('option', { value: 'or' }, 'OR'));
+      connector.value = f.connector === 'or' ? 'or' : 'and';
+      connector.addEventListener('change', () => { f.connector = connector.value; });
+      const value1 = h('input', { class: 'fb-input', placeholder: '值', spellcheck: 'false' });
+      value1.value = f.value || '';
+      value1.addEventListener('input', () => { f.value = value1.value; });
+      const value2 = h('input', { class: 'fb-input', placeholder: '第二个值', spellcheck: 'false' });
+      value2.value = f.value2 || '';
+      value2.addEventListener('input', () => { f.value2 = value2.value; });
+      const values = h('div', { class: 'fb-values' }, value1, value2);
+      const syncInputs = () => {
+        const op = opSel.value;
+        value1.disabled = !needsValue(op);
+        value2.classList.toggle('hidden', !['between', 'not between'].includes(op));
+        value1.placeholder = ['in', 'not in'].includes(op) ? '值1, 值2, …' : '值';
+      };
+      opSel.addEventListener('change', () => { f.op = opSel.value; syncInputs(); });
+      syncInputs();
+      const rm = h('button', { class: 'btn ghost sm icon', title: '删除条件', html: icon('x') });
+      rm.addEventListener('click', () => { draft.filters.splice(i, 1); renderConditions(); });
+      const row = h('div', { class: 'fb-row' },
+        i > 0 ? connector : h('span', { class: 'fb-connector faint' }, 'WHERE'),
+        colSel, opSel, values, rm);
+      condBox.append(row);
+    });
+  };
+
+  const renderSorts = () => {
+    sortBox.innerHTML = '';
+    draft.order.forEach((o, i) => {
+      const colSel = h('select', { class: 'fb-select' }, ...cols.map((c) => h('option', { value: c }, c)));
+      colSel.value = o.column;
+      colSel.addEventListener('change', () => { o.column = colSel.value; });
+      const dir = h('select', { class: 'fb-select' }, h('option', { value: 'asc' }, '升序 ASC'), h('option', { value: 'desc' }, '降序 DESC'));
+      dir.value = o.desc ? 'desc' : 'asc';
+      dir.addEventListener('change', () => { o.desc = dir.value === 'desc'; });
+      const up = h('button', { class: 'btn ghost sm icon', title: '上移', html: icon('arrowup'), disabled: i === 0 });
+      up.addEventListener('click', () => { [draft.order[i - 1], draft.order[i]] = [draft.order[i], draft.order[i - 1]]; renderSorts(); });
+      const rm = h('button', { class: 'btn ghost sm icon', title: '删除排序', html: icon('x') });
+      rm.addEventListener('click', () => { draft.order.splice(i, 1); renderSorts(); });
+      sortBox.append(h('div', { class: 'fb-row' }, h('span', { class: 'fb-connector faint' }, i === 0 ? 'ORDER BY' : '然后'), colSel, dir, up, rm));
+    });
+    if (!draft.order.length) sortBox.append(h('div', { class: 'faint fb-empty' }, '未设置排序；默认按主键升序分页。'));
+  };
+
+  const addCond = h('button', { class: 'btn sm', html: icon('plus') + '<span>添加条件</span>' });
+  addCond.addEventListener('click', () => {
+    draft.filters.push({ column: cols[0], op: '=', value: '', value2: '', connector: 'and' });
+    renderConditions();
+  });
+  const addSort = h('button', { class: 'btn sm', html: icon('plus') + '<span>添加排序</span>' });
+  addSort.addEventListener('click', () => {
+    if (draft.order.length >= 3) { toast('最多 3 个排序字段', 'warn', 2000); return; }
+    draft.order.push({ column: cols[0], desc: false });
+    renderSorts();
+  });
+
+  body.append(
+    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '筛选条件', h('span', { class: 'spacer' }), addCond), condBox),
+    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '排序', h('span', { class: 'spacer' }), addSort), sortBox),
+  );
+  renderConditions();
+  renderSorts();
+
+  const m = openModal({ title: '筛选与排序', subtitle: `${tab.db}.${tab.table}`, body, wide: true });
+  const reset = h('button', { class: 'btn' }, '重置');
+  reset.addEventListener('click', () => {
+    draft.filters = [];
+    draft.order = [];
+    renderConditions();
+    renderSorts();
+  });
+  const cancel = h('button', { class: 'btn' }, '取消');
+  cancel.addEventListener('click', () => m.close());
+  const apply = h('button', { class: 'btn primary' }, '应用');
+  apply.addEventListener('click', () => {
+    const filters = [];
+    for (const f of draft.filters) {
+      if (!f.column) continue;
+      const value = String(f.value || '').trim();
+      const value2 = String(f.value2 || '').trim();
+      if (f.op === 'is null' || f.op === 'is not null') {
+        filters.push({ column: f.column, op: f.op, value: '', value2: '', connector: filters.length ? (f.connector === 'or' ? 'or' : 'and') : 'and' });
+        continue;
+      }
+      if (['in', 'not in'].includes(f.op)) {
+        if (value.split(',').every((v) => !v.trim())) continue;
+      } else if (['between', 'not between'].includes(f.op)) {
+        if (!value && !value2) continue;
+        if (!value || !value2) { toast(`条件「${f.column}」需要两个值`, 'warn', 2400); return; }
+      } else if (!value) {
+        continue;
+      }
+      filters.push({ column: f.column, op: f.op, value: f.value || '', value2: f.value2 || '', connector: filters.length ? (f.connector === 'or' ? 'or' : 'and') : 'and' });
+    }
+    tab.filters = filters;
+    tab.order = draft.order.filter((o) => o.column);
+    tab.page = 0;
+    m.close();
+    loadTableRows(tab);
+  });
+  m.footer.append(reset, h('span', { class: 'spacer' }), cancel, apply);
 }
 
 function opLabel(op) {
@@ -1179,6 +1335,138 @@ async function deleteSelectedRow(tab) {
   const row = tab.grid.getSelectedRow();
   if (row < 0) { toast('请先选择一行', 'warn'); return; }
   await deleteRow(tab, row);
+}
+
+async function generateRowSQL(tab, row, kind) {
+  const r = tab.rowsData;
+  if (!r || !r.rows || !r.rows[row]) { toast('没有可用的行数据', 'err'); return; }
+  const values = {};
+  for (let i = 0; i < r.columns.length; i++) {
+    const v = r.rows[row][i];
+    values[r.columns[i].name] = v === null ? null : String(v);
+  }
+  const pk = {};
+  for (const key of r.primaryKey || []) {
+    const idx = r.columns.findIndex((c) => c.name === key);
+    if (idx >= 0) {
+      const v = r.rows[row][idx];
+      pk[key] = v === null ? null : String(v);
+    }
+  }
+  if ((kind === 'update' || kind === 'delete') && !Object.keys(pk).length) {
+    toast('该表没有主键，无法生成安全的 UPDATE / DELETE', 'err', 4000);
+    return;
+  }
+  try {
+    await ensureTabSession(tab);
+    const res = await apiPost('/api/rows/sql', {
+      session: tab.sessionId, database: tab.db, table: tab.table, kind, values, pk,
+    });
+    showSQLPreview(tab, res.sql, kind);
+  } catch (err) {
+    toast(err.message, 'err', 6000);
+  }
+}
+
+function showSQLPreview(tab, sql, kind) {
+  const body = h('div', { class: 'sql-preview' },
+    h('div', { class: 'faint', style: { fontSize: '11.5px', marginBottom: '8px' } },
+      `${kind.toUpperCase()} · ${tab.db}.${tab.table} · 由当前行生成，请核对后再执行`),
+    h('pre', { class: 'ddl' }, sql));
+  const m = openModal({ title: '生成的 SQL', subtitle: `${tab.db}.${tab.table}`, body, wide: true });
+  const copy = h('button', { class: 'btn sm', html: icon('copy') + '<span>复制</span>' });
+  copy.addEventListener('click', () => copyText(sql));
+  const open = h('button', { class: 'btn primary sm', html: icon('terminal') + '<span>在查询中打开</span>' });
+  open.addEventListener('click', () => { m.close(); openQuery(tab.connId, tab.db, sql); });
+  const close = h('button', { class: 'btn sm' }, '关闭');
+  close.addEventListener('click', () => m.close());
+  m.footer.append(h('span', { class: 'spacer' }), close, copy, open);
+}
+
+async function withConnSession(connId, fn) {
+  const cs = connState(connId);
+  if (cs.sessionId) return fn(cs.sessionId);
+  const v = await openSession(connId);
+  try {
+    return await fn(v.id);
+  } finally {
+    apiPost('/api/session/close', { session: v.id }).catch(() => {});
+  }
+}
+
+async function exportTableFromTree(connId, db, table) {
+  try {
+    await withConnSession(connId, async (sid) => {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'X-NavMini-Token': TOKEN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sid, database: db, table, orderBy: [], filters: [] }),
+      });
+      if (!res.ok) {
+        let msg = res.statusText;
+        try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      downloadBlob(blob, `${db}.${table}.csv`);
+    });
+    toast('已导出 CSV', 'ok');
+  } catch (err) {
+    toast(err.message, 'err', 6000);
+  }
+}
+
+function backupTableFromTree(connId, db, table) {
+  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const target = h('input', { class: 'input', value: `${table}_bak_${stamp}`, spellcheck: 'false' });
+  const mode = h('select', { class: 'input' },
+    h('option', { value: 'full' }, '结构 + 数据（默认）'),
+    h('option', { value: 'structure' }, '仅结构'),
+    h('option', { value: 'data' }, '仅数据（目标表需已存在）'));
+  const note = h('p', { class: 'faint', style: { fontSize: '11.5px', lineHeight: '1.7', margin: '4px 0 0' } },
+    '使用 CREATE TABLE … LIKE 保留索引与引擎；MySQL 不会复制外键定义。目标表已存在时会拒绝覆盖。');
+  const form = h('div', {},
+    h('div', { class: 'field' }, h('label', {}, '目标表名'), target),
+    h('div', { class: 'field' }, h('label', {}, '备份内容'), mode),
+    note);
+  const m = openModal({ title: '快速备份到当前库', subtitle: `${db}.${table}`, body: form });
+  const cancel = h('button', { class: 'btn' }, '取消');
+  cancel.addEventListener('click', () => m.close());
+  const run = h('button', { class: 'btn primary' }, '开始备份');
+  run.addEventListener('click', async () => {
+    const name = target.value.trim();
+    if (!/^[A-Za-z0-9_]{1,64}$/.test(name)) { toast('表名只能包含字母、数字、下划线（≤64）', 'warn'); return; }
+    if (name === table) { toast('目标表不能与源表同名', 'warn'); return; }
+    run.disabled = true;
+    run.textContent = '备份中…';
+    try {
+      const res = await withConnSession(connId, (sid) => apiPost('/api/table/backup', {
+        session: sid, database: db, table, target: name, mode: mode.value,
+      }));
+      toast(`备份完成：${name} · ${formatNumber(res.rows)} 行`, 'ok', 4000);
+      m.close();
+      refreshDbObjects(connId, db);
+    } catch (err) {
+      toast(err.message, 'err', 7000);
+      run.disabled = false;
+      run.textContent = '开始备份';
+    }
+  });
+  m.footer.append(h('span', { class: 'spacer' }), cancel, run);
+}
+
+async function refreshDbObjects(connId, db) {
+  const cs = connState(connId);
+  cs.objects.delete(db);
+  if (!cs.openDbs.has(db)) { renderTree(); return; }
+  try {
+    const sid = await ensureTreeSession(connId);
+    const objs = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(db)}`);
+    cs.objects.set(db, objs);
+  } catch (err) {
+    toast(err.message, 'err', 5000);
+  }
+  renderTree();
 }
 
 async function addRowDialog(tab) {
@@ -1744,6 +2032,8 @@ window.__navmini = {
   history: () => openHistory(),
   settings: () => openSettings(),
   about: () => openAbout(),
+  openQuery: (connId, db, sql) => openQuery(connId, db, sql),
+  askAI: (ctx) => openAssistant(ctx),
 };
 
 init();

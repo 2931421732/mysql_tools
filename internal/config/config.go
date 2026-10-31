@@ -91,10 +91,31 @@ func DefaultSettings() Settings {
 	return Settings{Theme: "dark", PageSize: 200, MaxRows: 1000, FontSize: 13}
 }
 
+// AIConfig is the public (secret-free) DeepSeek configuration.
+type AIConfig struct {
+	Enabled     bool     `json:"enabled"`
+	BaseURL     string   `json:"baseURL"`
+	Model       string   `json:"model"`
+	Permission  string   `json:"permission"` // readonly | modify | delete
+	Databases   []string `json:"databases"`
+	AutoExplain bool     `json:"autoExplain"`
+	HasKey      bool     `json:"hasKey"`
+}
+
+func DefaultAIConfig() AIConfig {
+	return AIConfig{
+		BaseURL:     "https://api.deepseek.com",
+		Model:       "deepseek-chat",
+		Permission:  "readonly",
+		AutoExplain: true,
+	}
+}
+
 // HistoryEntry is one executed statement.
 type HistoryEntry struct {
 	ID       string    `json:"id"`
 	SQL      string    `json:"sql"`
+	Source   string    `json:"source,omitempty"`
 	ConnName string    `json:"connName"`
 	Database string    `json:"database"`
 	Success  bool      `json:"success"`
@@ -110,6 +131,8 @@ type Store struct {
 	conns    []Connection
 	settings Settings
 	history  []HistoryEntry
+	ai       AIConfig
+	aiKey    string
 }
 
 func DefaultHome() string {
@@ -142,6 +165,9 @@ func Open(home string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadHistory(); err != nil {
+		return nil, err
+	}
+	if err := s.loadAI(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -491,4 +517,112 @@ func newID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+type storedAI struct {
+	AIConfig
+	APIKeyEnc string `json:"apiKeyEnc,omitempty"`
+}
+
+func (s *Store) GetAI() AIConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := s.ai
+	out.Databases = append([]string{}, s.ai.Databases...)
+	out.HasKey = s.aiKey != ""
+	return out
+}
+
+func (s *Store) AIKey() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.aiKey
+}
+
+func (s *Store) SaveAI(in AIConfig, apiKey string) error {
+	base := strings.TrimSpace(in.BaseURL)
+	if base == "" {
+		base = "https://api.deepseek.com"
+	}
+	model := strings.TrimSpace(in.Model)
+	if model == "" {
+		model = "deepseek-chat"
+	}
+	perm := strings.ToLower(strings.TrimSpace(in.Permission))
+	switch perm {
+	case "readonly", "modify", "delete":
+	default:
+		perm = "readonly"
+	}
+	dbs := make([]string, 0, len(in.Databases))
+	seen := map[string]bool{}
+	for _, d := range in.Databases {
+		d = strings.TrimSpace(d)
+		if d != "" && !seen[d] {
+			seen[d] = true
+			dbs = append(dbs, d)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ai = AIConfig{
+		Enabled: in.Enabled, BaseURL: base, Model: model, Permission: perm,
+		Databases: dbs, AutoExplain: in.AutoExplain,
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		enc, err := seal(s.key, strings.TrimSpace(apiKey))
+		if err != nil {
+			return err
+		}
+		s.aiKey = strings.TrimSpace(apiKey)
+		s.ai.HasKey = true
+		if err := writeJSONAtomic(filepath.Join(s.home, "ai.json"), storedAI{AIConfig: s.ai, APIKeyEnc: enc}, 0o600); err != nil {
+			return err
+		}
+		return nil
+	}
+	sc := storedAI{AIConfig: s.ai}
+	sc.HasKey = false
+	if s.aiKey != "" {
+		enc, err := seal(s.key, s.aiKey)
+		if err != nil {
+			return err
+		}
+		sc.APIKeyEnc = enc
+	}
+	return writeJSONAtomic(filepath.Join(s.home, "ai.json"), sc, 0o600)
+}
+
+func (s *Store) loadAI() error {
+	s.ai = DefaultAIConfig()
+	path := filepath.Join(s.home, "ai.json")
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var sc storedAI
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		return nil
+	}
+	s.ai = sc.AIConfig
+	if s.ai.BaseURL == "" {
+		s.ai.BaseURL = "https://api.deepseek.com"
+	}
+	if s.ai.Model == "" {
+		s.ai.Model = "deepseek-chat"
+	}
+	if s.ai.Permission == "" {
+		s.ai.Permission = "readonly"
+	}
+	if sc.APIKeyEnc != "" {
+		if key, err := openSealed(s.key, sc.APIKeyEnc); err == nil {
+			s.aiKey = key
+		}
+	}
+	s.ai.HasKey = s.aiKey != ""
+	return nil
 }

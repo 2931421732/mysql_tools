@@ -47,13 +47,28 @@ NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / 
 ## 功能
 
 - **连接管理**：分组、颜色、备注、SSL 模式、超时、SSH 隧道（密码 / 私钥 / ssh-agent）、测试连接。
-- **对象树**：库、表、视图、行数/大小、搜索、懒加载、右键菜单。
+- **对象树**：库、表、视图、行数/大小、搜索、懒加载、右键导出与快速备份。
 - **SQL 工作台**：多标签、语法高亮、表/列自动补全、`⌘↩` 运行、`⇧⌘↩` 运行选中、EXPLAIN、
   停止（`KILL QUERY`，会话不中断）、多语句/多结果集、查询历史。
-- **数据浏览**：分页、点表头排序、字段筛选（含 `IS NULL`）、基于主键的安全编辑、插入/删除行、
-  CSV 导出（服务端流式）。
+- **数据浏览**：分页、多条件 AND/OR 筛选（`IN` / `BETWEEN` / NULL）、多字段排序、
+  选中行生成 INSERT/UPDATE/DELETE SQL、基于主键的安全编辑、插入/删除行、CSV 导出（服务端流式）。
 - **结构与 DDL**：列、索引、外键、表信息、`SHOW CREATE TABLE`，可复制/下载/在编辑器中打开。
+- **快速备份**：右键表 → `CREATE TABLE … LIKE` + `INSERT … SELECT`，当前库留存结构与数据。
 - **服务器监控**：连接数、QPS、运行时间、慢查询、缓冲池命中、流量、进程列表与终止连接、状态变量。
+
+### DeepSeek 助手
+
+- 在助手面板里配置 **Base URL / 模型 / API Key**，支持 `deepseek-chat` 与 `deepseek-reasoner`；
+  API Key 用 AES-256-GCM 存在服务端，前端只看到“已配置”。
+- **权限模式**：`只读`（SELECT/SHOW/EXPLAIN）、`可修改`（+INSERT/UPDATE/REPLACE）、
+  `可删除`（+DELETE/DDL）。权限由服务端强制校验，普通 SQL 编辑器不受此限制。
+- **默认只生成 SQL**：助手返回 SQL 卡片、风险级别、索引/EXPLAIN 提示；点击执行才运行，
+  写/删操作还需在弹窗里核对并勾选确认。
+- **索引优先**：Schema 上下文包含主键、唯一键、二级索引和基数；生成后自动 `EXPLAIN`，
+  全表扫描超过 1000 行会给出提示。
+- **多库**：面板可多选数据库，SQL 要求 `db.table` 限定；执行会话不预设默认库。
+- **值驱动**：可右键表格行“让 AI 修改此行”附带选中行；模型最多可发起 2 条只读探测
+  （服务端强制 LIMIT 50），再生成最终 SQL。
 - **体验**：深/浅主题、可拖拽侧栏与编辑区、原生窗口、`⌘T` / `⌘N` / `⌘W` / `⌘K` 快捷键。
 
 | 数据浏览 | SQL 工作台 |
@@ -63,6 +78,8 @@ NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / 
 | 服务器监控 | 浅色主题 |
 |---|---|
 | ![监控](docs/images/04-monitor.png) | ![浅色](docs/images/05-light.png) |
+
+![DeepSeek 助手](docs/images/06-ai.png)
 
 ## 快速开始
 
@@ -107,15 +124,22 @@ open dist/NavMini.app
 在左侧点 `+` → 填主机/端口/用户/密码 → **测试连接** → **创建**。
 若数据库在跳板机后，展开 **SSH 隧道** 并填写 SSH 凭据。
 
+### 5. 配置 DeepSeek（可选）
+
+打开右上角 **AI 助手** → 齿轮 → 填 Base URL、模型、API Key → **测试连接** → 保存。
+默认权限为「只读」；切换到「可修改 / 可删除」后，写操作仍需在弹窗中确认。
+
 ## 目录
 
 ```
 cmd/navmini/          入口：监听、token、信号处理
-internal/config/      连接配置、AES-256-GCM、设置、历史
-internal/mysqlx/      会话、元数据、查询、表 CRUD、SSH 隧道
+internal/config/      连接配置、AES-256-GCM、设置、历史、AI 配置
+internal/mysqlx/      会话、元数据、查询、表 CRUD、备份、SQL 生成、SSH 隧道
+internal/ai/          DeepSeek 客户端、权限分类、Prompt
 internal/server/      HTTP API、鉴权、嵌入静态资源
 web/                  index.html + css/js（原生 ES modules，无构建步骤）
   js/app.js           壳、标签、树、表格页、对话框
+  js/ai.js            DeepSeek 助手面板与配置
   js/grid.js          虚拟滚动数据网格
   js/editor.js        SQL 编辑器（高亮 / 补全 / 行号）
   js/dom.js           轻量 DOM/弹窗/Toast 工具
@@ -131,6 +155,8 @@ docs/                 Navicat 架构分析、REA 证据、截图
 - 连接密码使用 **AES-256-GCM** 加密后写入 `~/.navmini/connections.json`；密钥
   `~/.navmini/secret.key`（0600）。App 模式使用 `~/Library/Application Support/NavMini/`。
   这能防"误看文件"，**不能**防本机同用户攻击。
+- DeepSeek API Key 同样加密存储在 `ai.json`，**不会回传浏览器**；AI 只接收 schema
+  （和用户明确附带/探测的行），不发送连接凭据。
 - 所有数据库标识符（库/表/列）都经过白名单校验 + 反引号转义；值一律参数化。
 - 取消长查询优先用 `KILL QUERY`；没有 `PROCESS` 权限时回退为取消上下文（会断开该会话连接）。
 - SSH 主机密钥采用首次自动信任，**没有** known_hosts 校验；生产环境请勿直接使用。
@@ -139,7 +165,10 @@ docs/                 Navicat 架构分析、REA 证据、截图
 ## 已知限制
 
 - 仅支持 MySQL 协议；没有 PostgreSQL / MongoDB / Redis / SQLite。
-- 没有 ER 图、数据同步/传输、备份恢复、调度、BI、AI 助手、调试器（Navicat 的这些模块见分析报告）。
+- 没有 ER 图、数据同步/传输、调度、BI、调试器（Navicat 的这些模块见分析报告）。
+- DeepSeek 需要自备 API Key；默认关闭，首次配置后启用。AI 请求会把所选库的 schema
+  发到配置的 Base URL；敏感库请谨慎选择范围。
+- AI 每次只允许一条语句、不自动执行；不支持流式输出；只读探测最多 2 条、每条 LIMIT 50。
 - 表设计器只读：能看结构、索引、外键和 DDL，不能改列。
 - SQL 脚本不支持 `DELIMITER`；存储过程/触发器的多语句脚本需要手工拆分。
 - 事务依赖会话：同一查询标签内的 `BEGIN … COMMIT` 可用，跨标签不共享事务。
@@ -153,7 +182,7 @@ go test ./...
 ```
 
 覆盖：SQL 语句切分、只读语句识别、标识符校验、字符集白名单、SSH 隧道真实转发、
-AES-GCM 配置落盘/回读与"不泄漏明文"。
+AES-GCM 配置落盘/回读与"不泄漏明文"、多条件筛选 SQL、SQL 字面量、AI 权限分类与 Prompt 解析。
 
 手工回归（示例库）：连接 → 对象树 → 表数据分页/排序/筛选 → 单元格编辑 → 插入/删除行 →
 CSV 导出 → 多语句查询 → `SELECT SLEEP(10)` 后停止 → 服务重启后再次运行（自动重开会话）。

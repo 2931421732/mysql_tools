@@ -393,6 +393,54 @@ func (s *Server) handleDeleteRow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"affected": n})
 }
 
+func (s *Server) handleRowSQL(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		mysqlx.RowSQLRequest
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	sess, ok := sessionByID(s, w, req.Session)
+	if !ok {
+		return
+	}
+	stmt, err := sess.RowSQL(r.Context(), req.RowSQLRequest)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"sql": stmt})
+}
+
+func (s *Server) handleBackupTable(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		Session string `json:"session"`
+		mysqlx.BackupRequest
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	sess, ok := sessionByID(s, w, req.Session)
+	if !ok {
+		return
+	}
+	res, err := sess.BackupTable(r.Context(), req.BackupRequest)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) handleProcesslist(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.sessionFromQuery(w, r)
 	if !ok {

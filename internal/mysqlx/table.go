@@ -12,9 +12,11 @@ import (
 )
 
 type RowFilter struct {
-	Column string `json:"column"`
-	Op     string `json:"op"`
-	Value  string `json:"value"`
+	Column    string `json:"column"`
+	Op        string `json:"op"`
+	Value     string `json:"value"`
+	Value2    string `json:"value2,omitempty"`
+	Connector string `json:"connector,omitempty"` // and (default) | or
 }
 
 type RowOrder struct {
@@ -335,39 +337,77 @@ func buildWhere(cols map[string]TableColumn, filters []RowFilter) (string, []any
 	if len(filters) == 0 {
 		return "", nil, nil
 	}
-	parts := make([]string, 0, len(filters))
 	args := make([]any, 0, len(filters))
-	for _, f := range filters {
+	expr := ""
+	for i, f := range filters {
 		if _, ok := cols[f.Column]; !ok {
 			return "", nil, fmt.Errorf("unknown filter column %q", f.Column)
 		}
 		op := strings.ToLower(strings.TrimSpace(f.Op))
 		ident := QuoteIdent(f.Column)
+		var cond string
 		switch op {
 		case "=", "!=", ">", ">=", "<", "<=":
-			parts = append(parts, ident+" "+op+" ?")
+			cond = ident + " " + op + " ?"
 			args = append(args, f.Value)
 		case "like", "not like":
-			parts = append(parts, ident+" "+strings.ToUpper(op)+" ?")
+			cond = ident + " " + strings.ToUpper(op) + " ?"
 			args = append(args, f.Value)
 		case "contains":
-			parts = append(parts, ident+" LIKE ?")
+			cond = ident + " LIKE ?"
 			args = append(args, "%"+f.Value+"%")
 		case "starts":
-			parts = append(parts, ident+" LIKE ?")
+			cond = ident + " LIKE ?"
 			args = append(args, f.Value+"%")
 		case "ends":
-			parts = append(parts, ident+" LIKE ?")
+			cond = ident + " LIKE ?"
 			args = append(args, "%"+f.Value)
+		case "in", "not in":
+			values := splitFilterValues(f.Value)
+			if len(values) == 0 {
+				return "", nil, fmt.Errorf("%s requires at least one value", op)
+			}
+			marks := make([]string, len(values))
+			for j, v := range values {
+				marks[j] = "?"
+				args = append(args, v)
+			}
+			cond = ident + " " + strings.ToUpper(op) + " (" + strings.Join(marks, ", ") + ")"
+		case "between", "not between":
+			if strings.TrimSpace(f.Value) == "" || strings.TrimSpace(f.Value2) == "" {
+				return "", nil, fmt.Errorf("%s requires two values", op)
+			}
+			cond = ident + " " + strings.ToUpper(op) + " ? AND ?"
+			args = append(args, f.Value, f.Value2)
 		case "is null":
-			parts = append(parts, ident+" IS NULL")
+			cond = ident + " IS NULL"
 		case "is not null":
-			parts = append(parts, ident+" IS NOT NULL")
+			cond = ident + " IS NOT NULL"
 		default:
 			return "", nil, fmt.Errorf("unsupported filter operator %q", f.Op)
 		}
+		if i == 0 {
+			expr = "(" + cond + ")"
+			continue
+		}
+		connector := strings.ToLower(strings.TrimSpace(f.Connector))
+		if connector != "or" {
+			connector = "and"
+		}
+		expr = "(" + expr + " " + strings.ToUpper(connector) + " (" + cond + "))"
 	}
-	return " WHERE " + strings.Join(parts, " AND "), args, nil
+	return " WHERE " + expr, args, nil
+}
+
+func splitFilterValues(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func buildOrder(cols map[string]TableColumn, pk []string, order []RowOrder) (string, error) {

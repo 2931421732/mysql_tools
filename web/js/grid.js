@@ -254,6 +254,16 @@ export class Grid {
         items.push({ label: '删除该行', icon: 'trash', danger: true, action: () => this.opts.onDeleteRow(hit.row) });
       }
     }
+    if (this.opts.onAskAI) {
+      items.push({ sep: true });
+      items.push({ label: '让 AI 修改此行', icon: 'sparkles', action: () => this.opts.onAskAI(hit.row) });
+    }
+    if (this.opts.onGenerateSQL && this.editable) {
+      items.push({ sep: true });
+      items.push({ label: '生成 INSERT', icon: 'plus', action: () => this.opts.onGenerateSQL(hit.row, 'insert') });
+      items.push({ label: '生成 UPDATE', icon: 'pencil', action: () => this.opts.onGenerateSQL(hit.row, 'update') });
+      items.push({ label: '生成 DELETE', icon: 'trash', danger: true, action: () => this.opts.onGenerateSQL(hit.row, 'delete') });
+    }
     if (this.opts.extraMenu) this.opts.extraMenu(items, hit);
     contextMenu(e.clientX, e.clientY, items);
   }

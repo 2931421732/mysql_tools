@@ -51,7 +51,7 @@ func TestBuildWhereRejectsUnknownColumn(t *testing.T) {
 		t.Fatal("expected unknown-column error")
 	}
 	where, args, err := buildWhere(cols, []RowFilter{{Column: "id", Op: ">", Value: "5"}})
-	if err != nil || where != " WHERE `id` > ?" || len(args) != 1 {
+	if err != nil || where != " WHERE (`id` > ?)" || len(args) != 1 {
 		t.Fatalf("unexpected where: %q %#v %v", where, args, err)
 	}
 }
