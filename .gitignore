@@ -5,3 +5,6 @@ dist/
 .gomodcache/
 *.log
 .DS_Store
+
+# 本地计划/草稿，不提交到 Git
+docs/plans/
