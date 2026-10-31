@@ -8,3 +8,10 @@ dist/
 
 # 本地计划/草稿，不提交到 Git
 docs/plans/
+
+# 用户设置的背景图片只保存在应用配置目录，不进入 Git / Release
+background.png
+background.jpg
+background.jpeg
+background.webp
+background.gif
