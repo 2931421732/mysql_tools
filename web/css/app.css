@@ -736,11 +736,18 @@ span.fb-connector { display: inline-flex; align-items: center; justify-content: 
 .bg-preview { min-height: 96px; border: 1px dashed var(--border); border-radius: var(--radius); display: flex; align-items: center; justify-content: center; overflow: hidden; background: var(--bg-soft); }
 .bg-preview img { max-width: 100%; max-height: 160px; object-fit: cover; }
 body.has-bg { background-image: var(--bg-image); background-size: cover; background-position: center; background-attachment: fixed; }
-body.has-bg #app { background: linear-gradient(rgba(16,19,24,.78), rgba(16,19,24,.78)); }
-html[data-theme="light"] body.has-bg #app { background: linear-gradient(rgba(241,244,247,.82), rgba(241,244,247,.82)); }
+body.has-bg #app {
+  background-image: linear-gradient(rgba(16,19,24,.55), rgba(16,19,24,.55)), var(--bg-image);
+  background-size: cover; background-position: center; background-attachment: fixed;
+}
+html[data-theme="light"] body.has-bg #app {
+  background-image: linear-gradient(rgba(241,244,247,.62), rgba(241,244,247,.62)), var(--bg-image);
+}
+body.has-bg #main { background: transparent; }
 body.has-bg #workspace { background: transparent; }
-body.has-bg #sidebar { background: color-mix(in srgb, var(--sidebar) 88%, transparent); }
-body.has-bg #tabbar { background: color-mix(in srgb, var(--sidebar) 82%, transparent); }
+body.has-bg #statusbar { background: color-mix(in srgb, var(--sidebar) 76%, transparent); backdrop-filter: blur(10px); }
+body.has-bg #sidebar { background: color-mix(in srgb, var(--sidebar) 74%, transparent); backdrop-filter: blur(12px); }
+body.has-bg #tabbar { background: color-mix(in srgb, var(--sidebar) 68%, transparent); backdrop-filter: blur(12px); }
 
 /* connection state: gray until a session is open, green afterwards */
 .node-icon.conn.disconnected { color: var(--text-faint); }
