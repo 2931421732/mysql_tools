@@ -53,7 +53,7 @@ Why Go:
 - **Data browsing**: pagination, multi-condition AND/OR filters (`IN` / `BETWEEN` / NULL), multi-column sorting, generate INSERT/UPDATE/DELETE SQL from selected rows, primary-key-based safe editing, insert/delete rows, CSV and XLSX export (headers, optional SQL sheet).
 - **Excel import**: a guided wizard reads `.xlsx/.xlsm` sheets, lets you choose the header row, auto-matches Excel headers to table columns, supports manual mapping, and inserts in bounded multi-row batches inside one transaction. DATE/DATETIME/TIMESTAMP/TIME values are normalized.
 - **Saved queries**: name and save SQL snippets; they are stored per connection endpoint (`host:port`) and shown again for the same connection.
-- **Settings**: language (English default, 中文), dark/light theme, UI/editor font, editor font size, background image, and the DeepSeek configuration all live in one Settings dialog.
+- **Settings**: language (English default, 中文), dark/light theme, UI/editor font, editor font size, background image, and the DeepSeek configuration all live in one Settings dialog. Open it from the top toolbar, the sidebar, or macOS `NavMini → Settings…` (`⌘,`).
 - **Connection state**: disconnected connections are gray; the icon turns green once a session is open.
 - **Structure and DDL**: columns, indexes, foreign keys, table info, `SHOW CREATE TABLE`; copy, download, or open in the editor.
 - **Quick backup**: right-click a table → `CREATE TABLE … LIKE` + `INSERT … SELECT`, keeping structure and data in the current database.

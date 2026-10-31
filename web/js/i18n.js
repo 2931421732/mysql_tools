@@ -36,7 +36,7 @@ const EN = {
   '表头行': 'Header row', '下一步': 'Next', '上一步': 'Back', '开始导入': 'Start import',
   '导入中…': 'Importing…', '源表头': 'Source header', '目标列': 'Target column',
   '自动匹配': 'Auto match', '手动匹配': 'Manual match', '跳过': 'Skip', '已导入': 'Imported',
-  '设置': 'Settings', '通用': 'General', '语言': 'Language', '主题': 'Theme', '深色': 'Dark',
+  '设置': 'Settings', '设置 (⌘,)': 'Settings (⌘,)', '通用': 'General', '语言': 'Language', '主题': 'Theme', '深色': 'Dark',
   '浅色': 'Light', '编辑区字号': 'Editor font size', '界面字体': 'UI font',
   '系统': 'System', '等宽': 'Monospace', '衬线': 'Serif', '背景图片': 'Background image',
   '上传图片': 'Upload image', '移除': 'Remove', '每页行数': 'Page size',

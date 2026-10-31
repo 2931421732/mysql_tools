@@ -67,6 +67,7 @@ function bindStaticIcons() {
   $('#btn-refresh-tree').innerHTML = icon('refresh');
   $('#btn-new-query').innerHTML = icon('plus');
   $('#btn-monitor').innerHTML = icon('activity');
+  $('#btn-settings-top').innerHTML = icon('settings');
   $('#btn-ai').innerHTML = icon('sparkles');
   $('#btn-about').innerHTML = icon('info');
   $('#btn-theme').innerHTML = icon('moon');
@@ -81,6 +82,7 @@ function bindChrome() {
   $('#btn-ai').addEventListener('click', () => openAIAssistantFromActive());
   $('#btn-about').addEventListener('click', openAbout);
   $('#btn-settings').addEventListener('click', openSettings);
+  $('#btn-settings-top').addEventListener('click', () => openSettings());
   $('#btn-history').addEventListener('click', openHistory);
   $('#btn-saved').addEventListener('click', () => openSavedQueries());
   $('#btn-theme').addEventListener('click', toggleTheme);
@@ -951,6 +953,7 @@ function bindShortcuts() {
     else if (key === 'n') { e.preventDefault(); openConnectionDialog(); }
     else if (key === 'w') { e.preventDefault(); const t = activeTab(); if (t) closeTab(t.id); }
     else if (key === 'k') { e.preventDefault(); openHistory(); }
+    else if (key === ',') { e.preventDefault(); openSettings(); }
   });
 }
 
