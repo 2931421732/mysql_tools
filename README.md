@@ -1,6 +1,6 @@
 # NavMini
 
-> 先拆 Navicat，再写一个能用的 —— 一个受 Navicat Premium 启发的轻量 MySQL 工作台。
+> 先拆某软件，再写一个能用的 —— 一个受其启发的轻量 MySQL 工作台。
 > REA 静态分析 → 架构报告 → Go 重实现 → 原生 macOS 外壳。
 
 ![NavMini 欢迎页](docs/images/01-welcome.png)
@@ -10,16 +10,16 @@
 NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / SSL）、库表对象树、SQL 工作台、
 结果网格、表数据编辑、结构与 DDL 浏览、服务器监控。
 
-它不是 Navicat 的功能复刻，而是把 Navicat 的**构造方式**压缩成一个可维护的小项目：
+它不是某软件的功能复刻，而是把某软件的**构造方式**压缩成一个可维护的小项目：
 
-- 分析对象：`/Applications/Navicat Premium Lite.app` 17.3.10（arm64）
+- 分析对象：某软件 17.3.10（arm64）
 - 分析方法：REA 6.8.0 静态取证（Mach-O / 签名 / Objective-C 元数据 / bundle 资源）
-- 完整分析：[docs/navicat-architecture.md](docs/navicat-architecture.md)
+- 完整分析：[docs/software-architecture.md](docs/software-architecture.md)
 - 证据包：`docs/rea-evidence.json`
 
 ## 为什么推荐 Go
 
-| 维度 | Navicat（实测） | NavMini（Go 实现） |
+| 维度 | 某软件（实测） | NavMini（Go 实现） |
 |---|---|---|
 | 交付形态 | 1.1 GB `.app`，93 个 dylib，主程序 71 MB + `libcc.dylib` 154 MB | 7 MB 单二进制 + 120 KB 原生外壳 |
 | UI | AppKit + 710 个 NIB + 私有框架 | WKWebView + 原生 ES Module 单页（无前端构建） |
@@ -32,17 +32,17 @@ NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / 
 1. **单二进制**：`CGO_ENABLED=0`，无运行时依赖，App 直接内嵌。
 2. **并发与取消**：goroutine + `context` 天然适合「一个连接一个会话、长查询可取消」。
 3. **驱动生态**：MySQL 协议成熟；SSH 隧道直接复用 `golang.org/x/crypto/ssh`。
-4. **可维护性**：Navicat 的 C++/ObjC++ 分层需要反编译器级别的人力；同样的分层用 Go 只要几千行。
+4. **可维护性**：某软件的 C++/ObjC++ 分层需要反编译器级别的人力；同样的分层用 Go 只要几千行。
 5. **跨平台**：同一后端可跑 macOS / Linux / Windows，外壳可替换。
 
-## 从 Navicat 抄的 6 条设计
+## 从某软件借鉴的 6 条设计
 
 1. UI 按「模块」拼装，结果集拆成网格 / 消息 / 信息 / 摘要（NavMini 对应结果标签 + 消息页）。
 2. 方言隔离：通用工作台 + 方言扩展（NavMini 先做 MySQL，驱动层预留）。
 3. 连接即配置树：General / Advanced / SSH / SSL 分层，凭据本地加密。
 4. 驱动插件化：核心不绑定协议（NavMini 的 `mysqlx` 与 HTTP 层解耦）。
 5. 对象树懒加载：连接 → 库 → 表/视图 → 列，逐级拉取。
-6. 一切可脚本化：Navicat 内置 SpiderMonkey；NavMini 用清晰的 JSON API，便于再脚本化。
+6. 一切可脚本化：某软件内置 SpiderMonkey；NavMini 用清晰的 JSON API，便于再脚本化。
 
 ## 功能
 
@@ -145,7 +145,7 @@ web/                  index.html + css/js（原生 ES modules，无构建步骤�
   js/dom.js           轻量 DOM/弹窗/Toast 工具
 shell/main.swift      WKWebView 原生外壳（菜单、子进程、生命周期）
 scripts/              build-app.sh / dev-db.sh / seed.sql
-docs/                 Navicat 架构分析、REA 证据、截图
+docs/                 某软件架构分析、REA 证据、截图
 ```
 
 ## 安全模型
@@ -165,7 +165,7 @@ docs/                 Navicat 架构分析、REA 证据、截图
 ## 已知限制
 
 - 仅支持 MySQL 协议；没有 PostgreSQL / MongoDB / Redis / SQLite。
-- 没有 ER 图、数据同步/传输、调度、BI、调试器（Navicat 的这些模块见分析报告）。
+- 没有 ER 图、数据同步/传输、调度、BI、调试器（某软件的这些模块见分析报告）。
 - DeepSeek 需要自备 API Key；默认关闭，首次配置后启用。AI 请求会把所选库的 schema
   发到配置的 Base URL；敏感库请谨慎选择范围。
 - AI 每次只允许一条语句、不自动执行；不支持流式输出；只读探测最多 2 条、每条 LIMIT 50。
@@ -191,7 +191,7 @@ CSV 导出 → 多语句查询 → `SELECT SLEEP(10)` 后停止 → 服务重启
 
 | 观测 | 值 |
 |---|---|
-| Bundle | `com.navicat.NavicatPremiumLite`，17.3.10，1.1 GB，3,393 个文件 |
+| Bundle | 某软件 17.3.10，1.1 GB，3,393 个文件 |
 | 主程序 | universal Mach-O，71,501,568 B，62 个依赖 |
 | 签名 | Developer ID: PremiumSoft CyberTech Ltd. (VH7G2MRF27)，hardened runtime |
 | 核心库 | `libcc.dylib` 154 MB，54 个 load command，40 个依赖 |
@@ -199,11 +199,11 @@ CSV 导出 → 多语句查询 → `SELECT SLEEP(10)` 后停止 → 服务重启
 | 模块协议 | `CCUIFormBehaviourProtocol`、`NAVFormModuleOwner`、`SQLEditorModuleOwner`、`SQLResult*Module` 等 |
 
 完整证据 ID、局限（无反编译器、未运行 App）见
-[docs/navicat-architecture.md](docs/navicat-architecture.md)。
+[docs/software-architecture.md](docs/software-architecture.md)。
 
 ## 说明
 
-Navicat 是 PremiumSoft CyberTech Ltd. 的商标。本项目仅用于学习与自用，与官方无关；
+本项目仅用于学习与自用；文中提到的「某软件」相关商标归其权利人所有，本项目与其官方无关。
 `docs/` 中的分析结论来自静态观测与推断，不构成对原软件的任何授权。
 
 ## 许可证
