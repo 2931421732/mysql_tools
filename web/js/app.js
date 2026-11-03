@@ -1101,7 +1101,13 @@ function renderTableActions(tab) {
     if (!sel || sel.row < 0 || sel.col < 0) { toast('请先选择一个单元格', 'warn', 2400); return; }
     openCellDetail(tab, sel.row, sel.col);
   } });
-  host.append(refresh, exportBtn, xlsxBtn, tsBtn, detailBtn);
+  const whereBtn = h('button', { class: 'btn sm', title: 'WHERE 条件（字段可手动输入）', html: icon('filter') + `<span>WHERE${tab.filters?.length ? ' ' + tab.filters.length : ''}</span>`, onClick: () => {
+    tab.filterOpen = !tab.filterOpen;
+    renderTableActions(tab);
+    renderTableContent(tab);
+  } });
+  whereBtn.classList.toggle('primary', !!tab.filterOpen);
+  host.append(refresh, whereBtn, exportBtn, xlsxBtn, tsBtn, detailBtn);
   if (!isView) {
     host.append(
       h('button', { class: 'btn sm', title: '插入行', html: icon('plus') + '<span>插入</span>', onClick: () => addRowDialog(tab) }),
@@ -1200,9 +1206,7 @@ function renderTableData(tab) {
       h('p', {}, tab.rowsError || '这张表暂时没有可显示的行。')));
     return;
   }
-  const filterWrap = h('div', { class: 'filter-wrap' }, buildFilterBar(tab));
-  if (tab.filterOpen) filterWrap.append(buildFilterEditor(tab));
-  tab.contentEl.append(filterWrap);
+  if (tab.filterOpen) tab.contentEl.append(h('div', { class: 'filter-wrap' }, buildFilterEditor(tab)));
   const qline = buildQueryLine(tab);
   if (qline) tab.contentEl.append(qline);
 
@@ -1238,16 +1242,6 @@ function renderTableData(tab) {
     timestampDisplay: !!tab.timestampDisplay,
   });
   tab.contentEl.append(buildPager(tab));
-}
-
-function addFilterFromField(tab, column) {
-  tab.filters = [...(tab.filters || []), { column, op: '=', value: '', value2: '', connector: 'and' }];
-  tab.filterOpen = true;
-  renderTableContent(tab);
-  setTimeout(() => {
-    const inputs = [...document.querySelectorAll('.filter-editor .fb-input')].filter((x) => !x.disabled && !x.classList.contains('hidden'));
-    inputs[inputs.length - 1]?.focus();
-  }, 40);
 }
 
 function mysqlQuote(v) {
@@ -1293,65 +1287,11 @@ function effectiveTableSQL(tab) {
 function buildQueryLine(tab) {
   if (!tab.db || !tab.table) return null;
   const sql = effectiveTableSQL(tab);
-  const bar = h('div', { class: 'query-line' },
+  return h('div', { class: 'query-line' },
     h('span', { class: 'ql-label' }, 'SQL'),
     h('span', { class: 'ql-text', title: sql }, sql),
     h('button', { class: 'btn ghost sm icon', title: '复制查询', html: icon('copy'), onClick: () => copyText(sql) }),
   );
-  return bar;
-}
-
-function buildFilterBar(tab) {
-  const bar = h('div', { class: 'filter-bar' });
-  const btn = h('button', { class: 'btn sm filter-open', html: icon('filter') + '<span>筛选 / 排序</span>' });
-  btn.classList.toggle('primary', !!tab.filterOpen);
-  btn.addEventListener('click', () => { tab.filterOpen = !tab.filterOpen; renderTableContent(tab); });
-  bar.append(btn);
-  const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
-  const listId = 'filter-cols-' + tab.id;
-  const quick = h('input', { class: 'fb-quick', list: listId, placeholder: '输入字段，快速添加筛选…', spellcheck: 'false' });
-  const dl = h('datalist', { id: listId }, ...cols.map((c) => h('option', { value: c })));
-  const addByField = () => {
-    const typed = quick.value.trim().toLowerCase();
-    if (!typed) return;
-    const found = cols.find((c) => c.toLowerCase() === typed) ||
-      cols.find((c) => c.toLowerCase().startsWith(typed)) ||
-      cols.find((c) => c.toLowerCase().includes(typed));
-    if (!found) { toast('没有匹配的字段', 'warn', 2200); return; }
-    quick.value = '';
-    addFilterFromField(tab, found);
-  };
-  quick.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addByField(); } });
-  bar.append(quick, dl);
-  const total = (tab.filters?.length || 0) + (tab.order?.length || 0);
-  if (total) bar.append(h('span', { class: 'count-badge' }, String(total)));
-  for (const f of tab.filters || []) {
-    if (!f.value && !f.value2 && !['is null', 'is not null'].includes(f.op)) continue;
-    const chip = h('span', { class: 'filter-chip', title: '点击编辑筛选' },
-      h('b', {}, f.column), ' ' + opLabel(f.op) + (f.value ? ' ' + escapeHtml(f.value) : '') + (f.value2 ? ' ~ ' + escapeHtml(f.value2) : ''));
-    chip.addEventListener('click', () => { tab.filterOpen = true; renderTableContent(tab); });
-    bar.append(chip);
-  }
-  for (const o of tab.order || []) {
-    bar.append(h('span', { class: 'filter-chip sort' }, h('b', {}, o.column), o.desc ? ' ↓' : ' ↑'));
-  }
-  if (total) {
-    bar.append(h('button', { class: 'btn ghost sm', onClick: () => { tab.filters = []; tab.order = []; tab.sortCleared = true; tab.page = 0; renderTableContent(tab); loadTableRows(tab); } }, '清除'));
-  }
-  bar.addEventListener('dragover', (e) => { e.preventDefault(); bar.classList.add('drag-over'); });
-  bar.addEventListener('dragleave', () => bar.classList.remove('drag-over'));
-  bar.addEventListener('drop', (e) => {
-    e.preventDefault();
-    bar.classList.remove('drag-over');
-    const column = e.dataTransfer?.getData('text/plain');
-    if (!column) return;
-    const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
-    if (!cols.includes(column)) return;
-    tab.filters = [...(tab.filters || []), { column, op: '=', value: '', value2: '', connector: 'and' }];
-    tab.filterOpen = true;
-    renderTableContent(tab);
-  });
-  return bar;
 }
 
 function buildFilterEditor(tab) {
@@ -1376,9 +1316,8 @@ function buildFilterEditor(tab) {
       return;
     }
     draft.filters.forEach((f, i) => {
-      const colSel = h('select', { class: 'fb-select', title: '字段' }, ...cols.map((c) => h('option', { value: c }, c)));
-      colSel.value = f.column;
-      colSel.addEventListener('change', () => { f.column = colSel.value; });
+      const colSel = h('input', { class: 'fb-select fb-col-input', title: '字段（可输入搜索）', list: 'filter-fields-' + tab.id, value: f.column, placeholder: '字段', spellcheck: 'false' });
+      colSel.addEventListener('input', () => { f.column = colSel.value.trim(); });
       const opSel = h('select', { class: 'fb-select', title: '运算符' }, ...ops.map(([v, l]) => h('option', { value: v }, l)));
       opSel.value = f.op;
       const connector = h('select', { class: 'fb-select fb-connector', title: '与上一条件的连接' },
@@ -1432,13 +1371,15 @@ function buildFilterEditor(tab) {
     if (draft.order.length >= 3) { toast('最多 3 个排序字段', 'warn', 2000); return; }
     draft.order.push({ column: cols[0], desc: false }); renderSorts();
   });
-  const close = () => { tab.filterOpen = false; renderTableContent(tab); };
+  const close = () => { tab.filterOpen = false; renderTableActions(tab); renderTableContent(tab); };
   const reset = h('button', { class: 'btn', onClick: () => { draft.filters = []; draft.order = []; renderConditions(); renderSorts(); } }, '重置');
   const cancel = h('button', { class: 'btn', onClick: close }, '取消');
   const apply = h('button', { class: 'btn primary', onClick: () => {
     const filters = [];
     for (const f of draft.filters) {
+      f.column = String(f.column || '').trim();
       if (!f.column) continue;
+      if (!cols.includes(f.column)) { toast(`没有字段「${f.column}」`, 'warn', 2400); return; }
       const value = String(f.value || '').trim();
       const value2 = String(f.value2 || '').trim();
       if (f.op === 'is null' || f.op === 'is not null') {
@@ -1458,12 +1399,14 @@ function buildFilterEditor(tab) {
     tab.sortCleared = tab.order.length === 0;
     tab.page = 0;
     tab.filterOpen = false;
+    renderTableActions(tab);
     renderTableContent(tab);
     loadTableRows(tab);
   } }, '应用');
 
   const editor = h('div', { class: 'filter-editor' },
-    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '筛选条件', h('span', { class: 'spacer' }), addCond), condBox),
+    h('datalist', { id: 'filter-fields-' + tab.id }, ...cols.map((c) => h('option', { value: c }))),
+    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '筛选条件 / WHERE', h('span', { class: 'spacer' }), addCond), condBox),
     h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '排序', h('span', { class: 'spacer' }), addSort), sortBox),
     h('div', { class: 'fb-footer' }, reset, h('span', { class: 'spacer' }), cancel, apply),
   );
