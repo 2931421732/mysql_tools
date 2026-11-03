@@ -54,8 +54,23 @@ func (s *Server) handleImportNCX(w http.ResponseWriter, r *http.Request) {
 	imported := make([]string, 0, len(conns))
 	warnings := []string{}
 	for _, c := range conns {
-		if c.Password != "" && looksEncrypted(c.Password) {
-			warnings = append(warnings, c.Name+": 密码看起来是 Navicat 加密值，请导入后手动修改")
+		if c.Password != "" {
+			pw, err := decryptNCXPassword(c.Password)
+			if err != nil {
+				warnings = append(warnings, c.Name+": 密码解密失败，已清空，请手动填写")
+				c.Password = ""
+			} else {
+				c.Password = pw
+			}
+		}
+		if c.SSH.Password != "" {
+			pw, err := decryptNCXPassword(c.SSH.Password)
+			if err != nil {
+				warnings = append(warnings, c.Name+": SSH 密码解密失败，已清空")
+				c.SSH.Password = ""
+			} else {
+				c.SSH.Password = pw
+			}
 		}
 		out, err := s.store.Upsert(c)
 		if err != nil {
@@ -203,8 +218,10 @@ var ncxAliases = map[string][]string{
 	"sslmode":  {"sslmode", "ssl_mode", "ssl", "usessl"},
 	"sshhost":  {"sshhost", "ssh_host", "sshtunnelhost"},
 	"sshport":  {"sshport", "ssh_port"},
-	"sshuser":  {"sshuser", "ssh_user", "sshusername"},
+	"sshuser":  {"sshuser", "ssh_user", "sshusername", "ssh_username"},
 	"sshpass":  {"sshpassword", "ssh_password", "sshpass"},
+	"sshkey":   {"ssh_privatekey", "sshprivatekey", "privatekey", "keypath"},
+	"sshauth":  {"ssh_authenmethod", "sshauthenmethod", "sshauth"},
 }
 
 func nodeValue(n *ncxNode, aliases []string, depth int) string {
@@ -234,6 +251,10 @@ func nodeValue(n *ncxNode, aliases []string, depth int) string {
 }
 
 func connFromNode(n *ncxNode) (config.Connection, bool) {
+	connType := strings.ToUpper(n.Attrs["conntype"])
+	if connType != "" && connType != "MYSQL" && connType != "MARIADB" {
+		return config.Connection{}, false
+	}
 	host := nodeValue(n, ncxAliases["host"], 1)
 	if host == "" {
 		return config.Connection{}, false
@@ -247,19 +268,34 @@ func connFromNode(n *ncxNode) (config.Connection, bool) {
 		name = host + ":" + strconv.Itoa(port)
 	}
 	user := nodeValue(n, ncxAliases["user"], 1)
+	ssl := strings.EqualFold(n.Attrs["ssl"], "true")
+	sslMode := "preferred"
+	if ssl {
+		sslMode = "required"
+	}
 	c := config.Connection{
 		Name: name, Host: host, Port: port, User: user,
 		Password: nodeValue(n, ncxAliases["password"], 1),
 		Database: nodeValue(n, ncxAliases["database"], 1),
-		Charset:  "utf8mb4", SSLMode: "preferred", Timeout: 10,
+		Charset:  "utf8mb4", SSLMode: sslMode, Timeout: 10,
 	}
 	sshHost := nodeValue(n, ncxAliases["sshhost"], 1)
-	if sshHost != "" {
+	sshOn := strings.EqualFold(n.Attrs["ssh"], "true") || sshHost != ""
+	if sshOn {
 		sshPort, _ := strconv.Atoi(nodeValue(n, ncxAliases["sshport"], 1))
 		if sshPort == 0 {
 			sshPort = 22
 		}
-		c.SSH = config.SSHConfig{Enabled: true, Host: sshHost, Port: sshPort, User: nodeValue(n, ncxAliases["sshuser"], 1), Auth: "password", Password: nodeValue(n, ncxAliases["sshpass"], 1)}
+		auth := "password"
+		if strings.EqualFold(nodeValue(n, ncxAliases["sshauth"], 1), "PUBLICKEY") {
+			auth = "key"
+		}
+		c.SSH = config.SSHConfig{
+			Enabled: true, Host: sshHost, Port: sshPort,
+			User: nodeValue(n, ncxAliases["sshuser"], 1), Auth: auth,
+			Password: nodeValue(n, ncxAliases["sshpass"], 1),
+			KeyPath:  nodeValue(n, ncxAliases["sshkey"], 1),
+		}
 	}
 	return c, true
 }
@@ -284,8 +320,4 @@ func connFromMap(m map[string]any) config.Connection {
 		Port: port, User: get("user", "username"), Password: get("password", "passwd"),
 		Database: get("database", "db"), Charset: "utf8mb4", SSLMode: "preferred", Timeout: 10,
 	}
-}
-
-func looksEncrypted(p string) bool {
-	return len(p) >= 16 && !strings.ContainsAny(p, " @.-_")
 }

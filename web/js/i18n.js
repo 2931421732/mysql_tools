@@ -120,7 +120,7 @@ const EN = {
   '通用': 'General',
   '导入': 'Import', '导出': 'Export', '插入': 'Insert', '删除': 'Delete', '保存': 'Save', '已保存': 'Saved',
   'CSV': 'CSV', 'Excel': 'Excel', '名称': 'Name', '保存查询': 'Save query',
-  '已保存查询': 'Saved queries', '还没有保存的查询': 'No saved queries yet', '语言 / Language': 'Language', '背景图片': 'Background image',
+  '已保存查询': 'Saved queries', '导出': 'Export', '导出连接': 'Export connections', '导出连接 (.ncx)': 'Export connections (.ncx)', '包含密码（AES-128-CBC 加密）': 'Include passwords (AES-128-CBC)', '还没有保存的查询': 'No saved queries yet', '语言 / Language': 'Language', '背景图片': 'Background image',
   '上传图片': 'Upload image', '移除': 'Remove', '启用助手': 'Enable assistant',
   '测试连接': 'Test connection', '保存成功': 'Saved', '连接成功': 'Connected',
   '表数据浏览的默认分页大小': 'Default page size for table browsing',

@@ -52,7 +52,7 @@ Why Go:
 - **SQL workbench**: multiple tabs, syntax highlighting, table/column autocomplete, `⌘↩` to run, `⇧⌘↩` to run the selection, EXPLAIN, stop (`KILL QUERY` without dropping the session), multiple statements and result sets, query history.
 - **Data browsing**: pagination, a **WHERE** builder in the table toolbar (no top filter bar) with manually typed fields, AND/OR conditions (`IN` / `BETWEEN` / NULL) and sorting; drag a column header to add a condition. **Details** bottom pane for full long text/JSON, column `COMMENT` tooltips, and a timestamp display toggle that never changes the underlying value (edits still send the raw value). A one-line effective SQL summary can be copied directly. Generate INSERT/UPDATE/DELETE SQL from selected rows, primary-key-based safe editing, insert/delete rows, CSV and XLSX export.
 - **Database export**: right-click a database → choose structure only, structure + all data, or custom (all structure + data for selected tables).
-- **`.ncx` connection import**: `+` → **Import .ncx**; plain XML/JSON connection exports are parsed into NavMini connections. Encrypted/binary exports are rejected with a clear message.
+- **`.ncx` connection import/export**: `+` → **Import .ncx** parses XML/JSON connection exports, including Navicat's AES-128-CBC encrypted passwords. **Export** (sidebar, `.ncx`) lets you select connections and optionally include passwords encrypted the same way.
 - **Excel import**: a guided wizard reads `.xlsx/.xlsm` sheets, lets you choose the header row, auto-matches Excel headers to table columns, supports manual mapping, and inserts in bounded multi-row batches inside one transaction. DATE/DATETIME/TIMESTAMP/TIME values are normalized.
 - **Saved queries**: name and save SQL snippets; they are stored per connection endpoint (`host:port`) and shown again for the same connection.
 - **Settings**: language (English default, 中文), dark/light theme, UI/editor font, editor font size, background image, default primary-key descending sort, and the DeepSeek configuration all live in one Settings dialog. Open it from the top toolbar, the sidebar, or macOS `NavMini → Settings…` (`⌘,`).
@@ -182,7 +182,7 @@ docs/                 reference application architecture analysis, REA evidence,
 - Transactions are session-scoped: `BEGIN … COMMIT` works within one query tab, but is not shared across tabs.
 - Query results are capped at 1 MiB per row; larger rows are truncated with a notice.
 - macOS uses `WKWebView`; Windows uses WebView2. The Windows exe embeds the Go server and requires the WebView2 Runtime.
-- NCX import supports plain XML/JSON exports; password-encrypted `.ncx` files are not decrypted.
+- NCX password fields are decrypted/encrypted with AES-128-CBC (zero padding). Whole-file encryption or binary NCX containers are not supported.
 - The timestamp display toggle is display-only; the raw value is what updates the database.
 
 ## Testing

@@ -194,6 +194,26 @@ func Open(home string) (*Store, error) {
 
 func (s *Store) Home() string { return s.home }
 
+// ConnectionsForExport returns clones including decrypted passwords, for the
+// explicit export flow only.
+func (s *Store) ConnectionsForExport(ids []string) []Connection {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make([]Connection, 0, len(s.conns))
+	for _, c := range s.conns {
+		if len(want) > 0 && !want[c.ID] {
+			continue
+		}
+		cc := c.Clone()
+		out = append(out, cc)
+	}
+	return out
+}
+
 func (s *Store) Connections() []Connection {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

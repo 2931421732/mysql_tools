@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 		"/api/connections/delete":        s.handleDeleteConnection,
 		"/api/connections/test":          s.handleTestConnection,
 		"/api/connections/import-ncx":    s.handleImportNCX,
+		"/api/connections/export-ncx":    s.handleExportNCX,
 		"/api/session/open":              s.handleOpenSession,
 		"/api/session/close":             s.handleCloseSession,
 		"/api/databases":                 s.handleDatabases,

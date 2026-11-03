@@ -85,6 +85,7 @@ function bindChrome() {
   $('#btn-settings-top').addEventListener('click', () => openSettings());
   $('#btn-history').addEventListener('click', openHistory);
   $('#btn-saved').addEventListener('click', () => openSavedQueries());
+  $('#btn-export-connections').addEventListener('click', openExportConnections);
   $('#btn-theme').addEventListener('click', toggleTheme);
   $('#tree-search').addEventListener('input', debounce((e) => { S.search = e.target.value.trim(); renderTree(); }, 120));
   bindSidebarResize();
@@ -2169,6 +2170,47 @@ function formatUptime(sec) {
 /* connection dialog                                                  */
 /* ------------------------------------------------------------------ */
 
+async function openExportConnections() {
+  if (!S.connections.length) { toast('还没有可导出的连接', 'warn', 2500); return; }
+  const selected = new Set(S.connections.map((c) => c.id));
+  const list = h('div', { class: 'export-conn-list' });
+  for (const c of S.connections) {
+    const cb = h('input', { type: 'checkbox', checked: true });
+    cb.value = c.id;
+    cb.addEventListener('change', () => { if (cb.checked) selected.add(c.id); else selected.delete(c.id); });
+    list.append(h('label', { class: 'check' }, cb, h('span', {}, `${c.name} · ${c.user}@${c.host}:${c.port}`)));
+  }
+  const include = h('input', { type: 'checkbox' });
+  const m = openModal({ title: '导出连接 (.ncx)', subtitle: 'NavMini / MySQL', body: h('div', {},
+    h('p', { class: 'modal-msg' }, '选择要导出的连接。导出文件可用于其他兼容客户端；默认不包含密码。'),
+    list,
+    h('label', { class: 'check', style: { marginTop: '12px' } }, include, h('span', {}, '包含密码（AES-128-CBC 加密）')),
+    h('p', { class: 'hint' }, '包含密码的文件应按敏感凭据保管。'),
+  ), wide: true });
+  const run = h('button', { class: 'btn primary' }, '导出 .ncx');
+  run.addEventListener('click', async () => {
+    if (!selected.size) { toast('至少选择一个连接', 'warn'); return; }
+    run.disabled = true;
+    try {
+      const res = await fetch('/api/connections/export-ncx', {
+        method: 'POST',
+        headers: { 'X-NavMini-Token': TOKEN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [...selected], includePassword: include.checked }),
+      });
+      if (!res.ok) {
+        let msg = res.statusText;
+        try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+        throw new Error(msg);
+      }
+      downloadBlob(await res.blob(), 'navmini-connections.ncx');
+      toast('已导出 .ncx', 'ok');
+      m.close();
+    } catch (err) { toast(err.message, 'err', 7000); }
+    finally { run.disabled = false; }
+  });
+  m.footer.append(h('span', { class: 'spacer' }), h('button', { class: 'btn', onClick: () => m.close() }, '取消'), run);
+}
+
 function openConnectionDialog(conn = null) {
   const editing = !!conn;
   const draft = conn ? JSON.parse(JSON.stringify(conn)) : {
@@ -2697,6 +2739,7 @@ window.__navmini = {
   openQuery: (connId, db, sql) => openQuery(connId, db, sql),
   askAI: (ctx) => openAssistant(ctx),
   importAttachment: (att, ctx) => importAIAttachment(att, ctx),
+  exportConnections: () => openExportConnections(),
 };
 
 init();
