@@ -311,6 +311,7 @@ function renderDbNode(conn, cs, db, q) {
     contextMenu(e.clientX, e.clientY, [
       { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, db.name, '') },
       { label: '刷新对象', icon: 'refresh', action: () => { cs.objects.delete(db.name); toggleDb(conn.id, db.name, true); } },
+      { label: '快速导出…', icon: 'download', action: () => openDatabaseExport(conn.id, db.name) },
       { label: '复制库名', icon: 'copy', action: () => copyText(db.name) },
     ]);
   });
@@ -806,9 +807,15 @@ function renderQueryResults(tab) {
   if (!entry) return;
   if (entry.kind === 'grid') {
     tabsEl.append(h('button', { class: 'btn sm', style: { marginLeft: '8px' }, title: 'Export Excel', html: icon('download') + '<span>Excel</span>', onClick: () => exportQueryXLSX(tab, entry) }));
+    tabsEl.append(h('button', { class: 'btn sm', title: '查看当前单元格完整内容', html: icon('file') + '<span>详情</span>', onClick: () => {
+      const sel = tab.queryGrid?.selected;
+      if (!sel || sel.row < 0 || sel.col < 0) { toast('请先选择一个单元格', 'warn', 2400); return; }
+      openCellDetail(tab, sel.row, sel.col);
+    } }));
     const host = h('div', { style: { flex: '1', minHeight: '0' } });
     bodyEl.append(host);
-    const grid = new Grid(host, { sortable: false, emptyText: '查询没有返回数据' });
+    const grid = new Grid(host, { sortable: false, emptyText: '查询没有返回数据', onDetail: (row, col) => openCellDetail(tab, row, col) });
+    tab.queryGrid = grid;
     grid.setData({ columns: entry.rs.columns, rows: entry.rs.rows, pk: [] });
     if (entry.rs.truncated) {
       bodyEl.append(h('div', { class: 'pager' }, h('span', {}, `已显示前 ${entry.rs.rowCount} 行（达到上限），请增加最大行数或使用 LIMIT。`)));
@@ -984,6 +991,8 @@ function buildTableTab(tab) {
   tab.loadingRows = false;
   tab.rowsError = '';
   tab.loadSeq = 0;
+  tab.timestampDisplay = false;
+  tab.filterOpen = false;
 
   const root = h('div', { class: 'tt' });
   const title = h('div', { class: 'tt-title' },
@@ -1019,6 +1028,60 @@ function renderSubtabs(tab) {
   tab.subtabsEl.querySelectorAll('.tt-subtab').forEach((b) => b.classList.toggle('active', b.dataset.view === tab.view));
 }
 
+function showDetailPanel(title, text, meta = '') {
+  document.getElementById('cell-detail')?.remove();
+  const body = h('pre', { class: 'detail-body' }, text || '');
+  const head = h('div', { class: 'detail-head' },
+    h('span', { class: 'title' }, title),
+    h('span', { class: 'meta' }, meta),
+    h('span', { class: 'flex-1' }),
+    h('button', { class: 'btn ghost sm icon', title: '复制', html: icon('copy'), onClick: () => copyText(text || '') }),
+    h('button', { class: 'btn ghost sm icon', title: '关闭', html: icon('x'), onClick: () => panel.remove() }),
+  );
+  const resizer = h('div', { class: 'detail-resizer' });
+  const panel = h('div', { class: 'detail-panel', id: 'cell-detail' }, resizer, head, body);
+  document.body.append(panel);
+  resizer.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const move = (ev) => { panel.style.height = Math.max(140, Math.min(window.innerHeight * 0.75, window.innerHeight - ev.clientY)) + 'px'; };
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+}
+
+async function openCellDetail(tab, row, col) {
+  const grid = tab.kind === 'query' ? tab.queryGrid : tab.grid;
+  const columns = grid?.columns || [];
+  const values = grid?.rows?.[row];
+  if (!values || !columns[col]) return;
+  const column = columns[col].name;
+  let text = values[col] === null || values[col] === undefined ? '' : String(values[col]);
+  let meta = '';
+  const r = tab.rowsData;
+  if (tab.kind === 'table' && r && r.primaryKey?.length) {
+    const pk = {};
+    for (const key of r.primaryKey) {
+      const idx = r.columns.findIndex((c) => c.name === key);
+      pk[key] = r.rows[row]?.[idx] === null ? null : String(r.rows[row]?.[idx]);
+    }
+    try {
+      const res = await apiPost('/api/cell', { session: tab.sessionId, database: tab.db, table: tab.table, column, pk });
+      text = res.null ? '' : res.value;
+      meta = res.bytes ? `${formatBytes(res.bytes)} · full value` : '';
+    } catch (err) {
+      meta = `详情读取失败：${err.message}（显示当前行值）`;
+    }
+  }
+  try {
+    if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    }
+  } catch { /* keep raw text */ }
+  const title = `${tab.table || 'query'}.${column} · row ${row + 1}`;
+  showDetailPanel(title, text || '(NULL)', meta);
+}
+
 function renderTableActions(tab) {
   const host = tab.actionsEl;
   host.innerHTML = '';
@@ -1026,7 +1089,18 @@ function renderTableActions(tab) {
   const refresh = h('button', { class: 'btn ghost sm icon', title: '刷新', html: icon('refresh'), onClick: () => { loadTableDetail(tab); loadTableRows(tab); } });
   const exportBtn = h('button', { class: 'btn sm', title: '导出 CSV', html: icon('download') + '<span>CSV</span>', onClick: () => exportTable(tab) });
   const xlsxBtn = h('button', { class: 'btn sm', title: '导出 Excel', html: icon('download') + '<span>Excel</span>', onClick: () => exportTableXLSX(tab) });
-  host.append(refresh, exportBtn, xlsxBtn);
+  const tsBtn = h('button', { class: 'btn sm', title: '时间戳转可读时间（不修改原始数据）', html: icon('clock') + '<span>时间</span>', onClick: () => {
+    tab.timestampDisplay = !tab.timestampDisplay;
+    tsBtn.classList.toggle('primary', !!tab.timestampDisplay);
+    renderTableContent(tab);
+  } });
+  tsBtn.classList.toggle('primary', !!tab.timestampDisplay);
+  const detailBtn = h('button', { class: 'btn sm', title: '查看当前单元格完整内容', html: icon('file') + '<span>详情</span>', onClick: () => {
+    const sel = tab.grid?.selected;
+    if (!sel || sel.row < 0 || sel.col < 0) { toast('请先选择一个单元格', 'warn', 2400); return; }
+    openCellDetail(tab, sel.row, sel.col);
+  } });
+  host.append(refresh, exportBtn, xlsxBtn, tsBtn, detailBtn);
   if (!isView) {
     host.append(
       h('button', { class: 'btn sm', title: '插入行', html: icon('plus') + '<span>插入</span>', onClick: () => addRowDialog(tab) }),
@@ -1121,7 +1195,9 @@ function renderTableData(tab) {
       h('p', {}, tab.rowsError || '这张表暂时没有可显示的行。')));
     return;
   }
-  tab.contentEl.append(buildFilterBar(tab));
+  const filterWrap = h('div', { class: 'filter-wrap' }, buildFilterBar(tab));
+  if (tab.filterOpen) filterWrap.append(buildFilterEditor(tab));
+  tab.contentEl.append(filterWrap);
 
   const host = h('div', { style: { flex: '1', minHeight: '0' } });
   tab.contentEl.append(host);
@@ -1138,16 +1214,20 @@ function renderTableData(tab) {
     onDeleteRow: (row) => deleteRow(tab, row),
     onGenerateSQL: (row, kind) => generateRowSQL(tab, row, kind),
     onAskAI: (row) => askAIForRow(tab, row),
+    onDetail: (row, col) => openCellDetail(tab, row, col),
     canEdit: () => editable,
   });
   tab.grid = grid;
+  const comments = new Map((tab.detail?.columns || []).map((c) => [c.name, c.comment || '']));
+  const columns = r.columns.map((c) => ({ ...c, comment: comments.get(c.name) || c.comment || '' }));
   grid.setData({
-    columns: r.columns,
+    columns,
     rows: r.rows,
     pk: r.primaryKey || [],
     sort: tab.order[0] ? { column: tab.order[0].column, desc: tab.order[0].desc } : null,
     editable,
     emptyText: '没有行',
+    timestampDisplay: !!tab.timestampDisplay,
   });
   tab.contentEl.append(buildPager(tab));
 }
@@ -1155,51 +1235,59 @@ function renderTableData(tab) {
 function buildFilterBar(tab) {
   const bar = h('div', { class: 'filter-bar' });
   const btn = h('button', { class: 'btn sm filter-open', html: icon('filter') + '<span>筛选 / 排序</span>' });
-  btn.addEventListener('click', () => openFilterPanel(tab));
+  btn.classList.toggle('primary', !!tab.filterOpen);
+  btn.addEventListener('click', () => { tab.filterOpen = !tab.filterOpen; renderTableContent(tab); });
   bar.append(btn);
   const total = (tab.filters?.length || 0) + (tab.order?.length || 0);
   if (total) bar.append(h('span', { class: 'count-badge' }, String(total)));
   for (const f of tab.filters || []) {
+    if (!f.value && !f.value2 && !['is null', 'is not null'].includes(f.op)) continue;
     const chip = h('span', { class: 'filter-chip', title: '点击编辑筛选' },
       h('b', {}, f.column), ' ' + opLabel(f.op) + (f.value ? ' ' + escapeHtml(f.value) : '') + (f.value2 ? ' ~ ' + escapeHtml(f.value2) : ''));
-    chip.addEventListener('click', () => openFilterPanel(tab));
+    chip.addEventListener('click', () => { tab.filterOpen = true; renderTableContent(tab); });
     bar.append(chip);
   }
-  for (const [i, o] of (tab.order || []).entries()) {
-    if (i > 0) bar.append(h('span', { class: 'faint', style: { fontSize: '10px' } }, '然后'));
-    bar.append(h('span', { class: 'filter-chip sort-chip' }, h('b', {}, o.column), o.desc ? ' 降序' : ' 升序'));
+  for (const o of tab.order || []) {
+    bar.append(h('span', { class: 'filter-chip sort' }, h('b', {}, o.column), o.desc ? ' ↓' : ' ↑'));
   }
-  bar.append(h('span', { class: 'flex-1' }));
   if (total) {
-    const clear = h('button', { class: 'link-btn' }, '清除条件');
-    clear.addEventListener('click', () => { tab.filters = []; tab.order = []; tab.page = 0; loadTableRows(tab); });
-    bar.append(clear);
+    bar.append(h('button', { class: 'btn ghost sm', onClick: () => { tab.filters = []; tab.order = []; tab.page = 0; renderTableContent(tab); loadTableRows(tab); } }, '清除'));
   }
+  bar.addEventListener('dragover', (e) => { e.preventDefault(); bar.classList.add('drag-over'); });
+  bar.addEventListener('dragleave', () => bar.classList.remove('drag-over'));
+  bar.addEventListener('drop', (e) => {
+    e.preventDefault();
+    bar.classList.remove('drag-over');
+    const column = e.dataTransfer?.getData('text/plain');
+    if (!column) return;
+    const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
+    if (!cols.includes(column)) return;
+    tab.filters = [...(tab.filters || []), { column, op: '=', value: '', value2: '', connector: 'and' }];
+    tab.filterOpen = true;
+    renderTableContent(tab);
+  });
   return bar;
 }
 
-function openFilterPanel(tab) {
+function buildFilterEditor(tab) {
   const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
-  if (!cols.length) { toast('表结构尚未加载', 'warn'); return; }
+  if (!cols.length) return h('div', { class: 'filter-editor' }, h('div', { class: 'faint fb-empty' }, '表结构尚未加载'));
   const draft = {
     filters: (tab.filters || []).map((f) => ({ ...f })),
     order: (tab.order || []).map((o) => ({ ...o })),
   };
   const condBox = h('div', { class: 'fb-list' });
   const sortBox = h('div', { class: 'fb-list' });
-  const body = h('div', { class: 'fb-body' });
-
   const ops = [['=', '='], ['!=', '≠'], ['>', '>'], ['>=', '≥'], ['<', '<'], ['<=', '≤'],
     ['contains', '包含'], ['starts', '开头是'], ['ends', '结尾是'],
     ['in', 'IN（逗号分隔）'], ['not in', 'NOT IN'], ['between', 'BETWEEN'], ['not between', 'NOT BETWEEN'],
     ['is null', '为空'], ['is not null', '不为空']];
-
   const needsValue = (op) => !['is null', 'is not null'].includes(op);
 
   const renderConditions = () => {
     condBox.innerHTML = '';
     if (!draft.filters.length) {
-      condBox.append(h('div', { class: 'faint fb-empty' }, '还没有筛选条件，点击「添加条件」。'));
+      condBox.append(h('div', { class: 'faint fb-empty' }, '还没有筛选条件，点击「添加条件」，或从表头拖入字段。'));
       return;
     }
     draft.filters.forEach((f, i) => {
@@ -1220,19 +1308,17 @@ function openFilterPanel(tab) {
       value2.addEventListener('input', () => { f.value2 = value2.value; });
       const values = h('div', { class: 'fb-values' }, value1, value2);
       const syncInputs = () => {
-        const op = opSel.value;
-        value1.disabled = !needsValue(op);
-        value2.classList.toggle('hidden', !['between', 'not between'].includes(op));
-        value1.placeholder = ['in', 'not in'].includes(op) ? '值1, 值2, …' : '值';
+        value1.disabled = !needsValue(opSel.value);
+        value2.classList.toggle('hidden', !['between', 'not between'].includes(opSel.value));
+        value1.placeholder = ['in', 'not in'].includes(opSel.value) ? '值1, 值2, …' : '值';
       };
       opSel.addEventListener('change', () => { f.op = opSel.value; syncInputs(); });
       syncInputs();
       const rm = h('button', { class: 'btn ghost sm icon', title: '删除条件', html: icon('x') });
       rm.addEventListener('click', () => { draft.filters.splice(i, 1); renderConditions(); });
-      const row = h('div', { class: 'fb-row' },
+      condBox.append(h('div', { class: 'fb-row' },
         i > 0 ? connector : h('span', { class: 'fb-connector faint' }, 'WHERE'),
-        colSel, opSel, values, rm);
-      condBox.append(row);
+        colSel, opSel, values, rm));
     });
   };
 
@@ -1255,36 +1341,16 @@ function openFilterPanel(tab) {
   };
 
   const addCond = h('button', { class: 'btn sm', html: icon('plus') + '<span>添加条件</span>' });
-  addCond.addEventListener('click', () => {
-    draft.filters.push({ column: cols[0], op: '=', value: '', value2: '', connector: 'and' });
-    renderConditions();
-  });
+  addCond.addEventListener('click', () => { draft.filters.push({ column: cols[0], op: '=', value: '', value2: '', connector: 'and' }); renderConditions(); });
   const addSort = h('button', { class: 'btn sm', html: icon('plus') + '<span>添加排序</span>' });
   addSort.addEventListener('click', () => {
     if (draft.order.length >= 3) { toast('最多 3 个排序字段', 'warn', 2000); return; }
-    draft.order.push({ column: cols[0], desc: false });
-    renderSorts();
+    draft.order.push({ column: cols[0], desc: false }); renderSorts();
   });
-
-  body.append(
-    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '筛选条件', h('span', { class: 'spacer' }), addCond), condBox),
-    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '排序', h('span', { class: 'spacer' }), addSort), sortBox),
-  );
-  renderConditions();
-  renderSorts();
-
-  const m = openModal({ title: '筛选与排序', subtitle: `${tab.db}.${tab.table}`, body, wide: true });
-  const reset = h('button', { class: 'btn' }, '重置');
-  reset.addEventListener('click', () => {
-    draft.filters = [];
-    draft.order = [];
-    renderConditions();
-    renderSorts();
-  });
-  const cancel = h('button', { class: 'btn' }, '取消');
-  cancel.addEventListener('click', () => m.close());
-  const apply = h('button', { class: 'btn primary' }, '应用');
-  apply.addEventListener('click', () => {
+  const close = () => { tab.filterOpen = false; renderTableContent(tab); };
+  const reset = h('button', { class: 'btn', onClick: () => { draft.filters = []; draft.order = []; renderConditions(); renderSorts(); } }, '重置');
+  const cancel = h('button', { class: 'btn', onClick: close }, '取消');
+  const apply = h('button', { class: 'btn primary', onClick: () => {
     const filters = [];
     for (const f of draft.filters) {
       if (!f.column) continue;
@@ -1299,18 +1365,25 @@ function openFilterPanel(tab) {
       } else if (['between', 'not between'].includes(f.op)) {
         if (!value && !value2) continue;
         if (!value || !value2) { toast(`条件「${f.column}」需要两个值`, 'warn', 2400); return; }
-      } else if (!value) {
-        continue;
-      }
+      } else if (!value) continue;
       filters.push({ column: f.column, op: f.op, value: f.value || '', value2: f.value2 || '', connector: filters.length ? (f.connector === 'or' ? 'or' : 'and') : 'and' });
     }
     tab.filters = filters;
     tab.order = draft.order.filter((o) => o.column);
     tab.page = 0;
-    m.close();
+    tab.filterOpen = false;
+    renderTableContent(tab);
     loadTableRows(tab);
-  });
-  m.footer.append(reset, h('span', { class: 'spacer' }), cancel, apply);
+  } }, '应用');
+
+  const editor = h('div', { class: 'filter-editor' },
+    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '筛选条件', h('span', { class: 'spacer' }), addCond), condBox),
+    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '排序', h('span', { class: 'spacer' }), addSort), sortBox),
+    h('div', { class: 'fb-footer' }, reset, h('span', { class: 'spacer' }), cancel, apply),
+  );
+  renderConditions();
+  renderSorts();
+  return editor;
 }
 
 function opLabel(op) {
@@ -1482,6 +1555,55 @@ async function exportTableFromTree(connId, db, table) {
   } catch (err) {
     toast(err.message, 'err', 6000);
   }
+}
+
+async function openDatabaseExport(connId, dbName) {
+  const conn = connById(connId);
+  if (!conn) { toast('连接不存在', 'err'); return; }
+  let objects = [];
+  try {
+    const sid = await ensureTreeSession(connId);
+    objects = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(dbName)}`);
+  } catch (err) { toast(err.message, 'err', 6000); return; }
+  const tables = (objects || []).filter((o) => o.type !== 'VIEW');
+  const mode = h('select', { class: 'input' },
+    h('option', { value: 'structure' }, '仅结构'),
+    h('option', { value: 'full' }, '结构 + 全部数据'),
+    h('option', { value: 'custom' }, '自定义：全部结构，指定表数据'));
+  const custom = h('div', { class: 'export-table-list hidden' });
+  for (const t of tables) {
+    const cb = h('input', { type: 'checkbox', checked: true });
+    cb.value = t.name;
+    custom.append(h('label', { class: 'check' }, cb, h('span', {}, t.name)));
+  }
+  mode.addEventListener('change', () => custom.classList.toggle('hidden', mode.value !== 'custom'));
+  const m = openModal({ title: '快速导出数据库', subtitle: dbName, body: h('div', { class: 'form-grid' },
+    field('导出内容', mode),
+    h('div', { class: 'field wide' }, h('label', {}, '指定表数据（仅自定义模式）'), custom),
+  ), wide: true });
+  const run = h('button', { class: 'btn primary' }, '导出 .sql');
+  run.addEventListener('click', async () => {
+    const dataTables = [...custom.querySelectorAll('input:checked')].map((x) => x.value);
+    run.disabled = true;
+    try {
+      const sid = await ensureTreeSession(connId);
+      const res = await fetch('/api/database/export', {
+        method: 'POST',
+        headers: { 'X-NavMini-Token': TOKEN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: sid, database: dbName, mode: mode.value, dataTables }),
+      });
+      if (!res.ok) {
+        let msg = res.statusText;
+        try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+        throw new Error(msg);
+      }
+      downloadBlob(await res.blob(), `${dbName}-${mode.value}.sql`);
+      toast('已导出 SQL', 'ok');
+      m.close();
+    } catch (err) { toast(err.message, 'err', 7000); }
+    finally { run.disabled = false; }
+  });
+  m.footer.append(h('span', { class: 'spacer' }), h('button', { class: 'btn', onClick: () => m.close() }, '取消'), run);
 }
 
 function backupTableFromTree(connId, db, table) {
@@ -2187,7 +2309,28 @@ function openConnectionDialog(conn = null) {
     });
     m.footer.append(del);
   }
-  m.footer.append(h('span', { class: 'spacer' }), testBtn, cancel, save);
+  const ncxInput = h('input', { type: 'file', accept: '.ncx', class: 'bg-file-input' });
+  const ncxBtn = h('label', { class: 'btn', title: '从 .ncx 导入连接' }, '导入 .ncx', ncxInput);
+  ncxInput.addEventListener('change', async () => {
+    const file = ncxInput.files && ncxInput.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/connections/import-ncx', { method: 'POST', headers: { 'X-NavMini-Token': TOKEN }, body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const state = await apiGet('/api/state');
+      S.connections = state.connections || [];
+      renderTree();
+      const welcome = S.tabs.find((t) => t.kind === 'welcome');
+      if (welcome) renderWelcome(welcome);
+      m.close();
+      toast(`已导入 ${data.count || 0} 个连接` + (data.warnings?.length ? `；${data.warnings[0]}` : ''), data.warnings?.length ? 'warn' : 'ok', 6000);
+    } catch (err) { toast(err.message, 'err', 8000); }
+    finally { ncxInput.value = ''; }
+  });
+  m.footer.append(h('span', { class: 'spacer' }), ncxBtn, testBtn, cancel, save);
   setTimeout(() => name.focus(), 60);
 }
 

@@ -686,3 +686,59 @@ func (s *Server) handleClearBackground(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+func (s *Server) handleCell(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		Session  string             `json:"session"`
+		Database string             `json:"database"`
+		Table    string             `json:"table"`
+		Column   string             `json:"column"`
+		PK       map[string]*string `json:"pk"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	sess, ok := sessionByID(s, w, req.Session)
+	if !ok {
+		return
+	}
+	value, err := sess.Cell(r.Context(), req.Database, req.Table, req.Column, req.PK)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+
+func (s *Server) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		Session    string   `json:"session"`
+		Database   string   `json:"database"`
+		Mode       string   `json:"mode"`
+		DataTables []string `json:"dataTables"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	sess, ok := sessionByID(s, w, req.Session)
+	if !ok {
+		return
+	}
+	name := safeFileName(req.Database + "-" + req.Mode + ".sql")
+	w.Header().Set("Content-Type", "application/sql; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	if _, err := sess.ExportDatabaseSQL(r.Context(), mysqlx.DatabaseExportRequest{
+		Database: req.Database, Mode: req.Mode, DataTables: req.DataTables,
+	}, w); err != nil {
+		log.Printf("database export %s: %v", req.Database, err)
+	}
+}

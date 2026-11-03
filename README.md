@@ -50,11 +50,13 @@ Why Go:
 - **Connection management**: groups, colors, notes, SSL mode, timeouts, SSH tunnels (password / private key / ssh-agent), test connection.
 - **Object tree**: databases, tables, views, row counts and sizes, search, lazy loading, right-click export and quick backup.
 - **SQL workbench**: multiple tabs, syntax highlighting, table/column autocomplete, `⌘↩` to run, `⇧⌘↩` to run the selection, EXPLAIN, stop (`KILL QUERY` without dropping the session), multiple statements and result sets, query history.
-- **Data browsing**: pagination, multi-condition AND/OR filters (`IN` / `BETWEEN` / NULL), multi-column sorting, generate INSERT/UPDATE/DELETE SQL from selected rows, primary-key-based safe editing, insert/delete rows, CSV and XLSX export (headers, optional SQL sheet).
+- **Data browsing**: pagination, inline multi-condition AND/OR filters (`IN` / `BETWEEN` / NULL) and sorting without a modal, drag a column header into the filter bar, **Details** bottom pane for full long text/JSON, column `COMMENT` tooltips, and a timestamp display toggle that never changes the underlying value (edits still send the raw value). Generate INSERT/UPDATE/DELETE SQL from selected rows, primary-key-based safe editing, insert/delete rows, CSV and XLSX export.
+- **Database export**: right-click a database → choose structure only, structure + all data, or custom (all structure + data for selected tables).
+- **`.ncx` connection import**: `+` → **Import .ncx**; plain XML/JSON connection exports are parsed into NavMini connections. Encrypted/binary exports are rejected with a clear message.
 - **Excel import**: a guided wizard reads `.xlsx/.xlsm` sheets, lets you choose the header row, auto-matches Excel headers to table columns, supports manual mapping, and inserts in bounded multi-row batches inside one transaction. DATE/DATETIME/TIMESTAMP/TIME values are normalized.
 - **Saved queries**: name and save SQL snippets; they are stored per connection endpoint (`host:port`) and shown again for the same connection.
 - **Settings**: language (English default, 中文), dark/light theme, UI/editor font, editor font size, background image, and the DeepSeek configuration all live in one Settings dialog. Open it from the top toolbar, the sidebar, or macOS `NavMini → Settings…` (`⌘,`).
-- **Connection state**: disconnected connections are gray; the icon turns green once a session is open.
+- **Connection state**: disconnected connections are white; the icon turns green once a session is open.
 - **Structure and DDL**: columns, indexes, foreign keys, table info, `SHOW CREATE TABLE`; copy, download, or open in the editor.
 - **Quick backup**: right-click a table → `CREATE TABLE … LIKE` + `INSERT … SELECT`, keeping structure and data in the current database.
 - **Server monitoring**: connections, QPS, uptime, slow queries, buffer pool hit rate, traffic, process list with the ability to kill connections, status variables.
@@ -118,20 +120,31 @@ Both modes listen only on `127.0.0.1`, on a random port, and print a tokenized U
 
 > On first launch NavMini already ships with a "Demo MySQL (local demo)" connection pointing at `127.0.0.1:13306`, so `scripts/dev-db.sh start` is enough to try it. Right-click the connection and delete it if you don't need it.
 
-### 4. Connect your own database
+### 4. Windows native build
+
+The Windows artifact is a single `.exe` with an embedded Go server and a native
+**WebView2** window — it no longer opens a browser. Build it with:
+
+```bash
+./scripts/build-windows.sh
+# needs the Microsoft Edge WebView2 Runtime (preinstalled on Windows 10/11)
+```
+
+### 5. Connect your own database
 
 Click `+` on the left → enter host / port / user / password → **Test connection** → **Create**.
 If the database sits behind a jump host, expand **SSH tunnel** and fill in the SSH credentials.
 
-### 5. Configure DeepSeek (optional)
+### 6. Configure DeepSeek (optional)
 
-Open **AI assistant** in the top-right → gear icon → enter Base URL, model, and API key → **Test connection** → save.
+Open **Settings → DeepSeek** (top toolbar, sidebar, or macOS `⌘,`) → enter Base URL, model, and API key → **Test connection** → save.
 The default permission is "Read-only"; after switching to "Modify / Delete", write operations still need confirmation in a dialog.
 
 ## Project layout
 
 ```
 cmd/navmini/          entry point: listener, token, signal handling
+cmd/navmini-windows/  native Windows WebView2 shell (single exe)
 internal/config/      connection config, AES-256-GCM, settings, history, AI config
 internal/mysqlx/      sessions, metadata, queries, table CRUD, backup, SQL generation, SSH tunnel
 internal/ai/          DeepSeek client, permission classification, prompts
@@ -144,7 +157,7 @@ web/                  index.html + css/js (native ES modules, no build step)
   js/editor.js        SQL editor (highlighting / completion / line numbers)
   js/dom.js           lightweight DOM/dialog/toast helpers
 shell/main.swift      WKWebView native shell (menus, child process, lifecycle)
-scripts/              build-app.sh / dev-db.sh / seed.sql
+scripts/              build-app.sh / build-windows.sh / dev-db.sh / seed.sql
 docs/                 reference application architecture analysis, REA evidence, screenshots
 ```
 
@@ -168,7 +181,9 @@ docs/                 reference application architecture analysis, REA evidence,
 - SQL scripts do not support `DELIMITER`; multi-statement scripts for stored procedures and triggers must be split by hand.
 - Transactions are session-scoped: `BEGIN … COMMIT` works within one query tab, but is not shared across tabs.
 - Query results are capped at 1 MiB per row; larger rows are truncated with a notice.
-- The native shell uses `WKWebView`; on first run the system creates a WebKit cache directory. No network upload occurs.
+- macOS uses `WKWebView`; Windows uses WebView2. The Windows exe embeds the Go server and requires the WebView2 Runtime.
+- NCX import supports plain XML/JSON exports; password-encrypted `.ncx` files are not decrypted.
+- The timestamp display toggle is display-only; the raw value is what updates the database.
 
 ## Testing
 

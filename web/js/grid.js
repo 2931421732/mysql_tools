@@ -33,16 +33,24 @@ export class Grid {
     this.body.addEventListener('contextmenu', (e) => this.onContext(e));
     this.headInner.addEventListener('click', (e) => this.onHeadClick(e));
     this.headInner.addEventListener('mousedown', (e) => this.onHeadMouseDown(e));
+    this.headInner.addEventListener('dragstart', (e) => {
+      const th = e.target.closest('.gh-cell[data-col]');
+      if (!th || !e.dataTransfer) { e.preventDefault(); return; }
+      const col = this.columns[Number(th.dataset.col)];
+      e.dataTransfer.setData('text/plain', col.name);
+      e.dataTransfer.effectAllowed = 'copy';
+    });
     window.addEventListener('resize', () => this.scheduleRender());
   }
 
-  setData({ columns = [], rows = [], pk = [], sort = null, editable = false, emptyText } = {}) {
+  setData({ columns = [], rows = [], pk = [], sort = null, editable = false, emptyText, timestampDisplay = false } = {}) {
     const changed = this.signature(columns) !== this.signature(this.columns) || this.widths.length !== columns.length;
     this.columns = columns;
     this.rows = rows;
     this.pk = new Set(pk || []);
     this.sort = sort;
     this.editable = !!editable;
+    this.timestampDisplay = !!timestampDisplay;
     if (emptyText) this.emptyText = emptyText;
     this.selected = { row: -1, col: -1 };
     if (changed || !this.widths.length) this.computeWidths();
@@ -79,7 +87,8 @@ export class Grid {
       const isPk = this.pk.has(c.name);
       let ind = '';
       if (sortInfo && sortInfo.column === c.name) ind = sortInfo.desc ? ' ↓' : ' ↑';
-      html += `<div class="gh-cell ${this.opts.sortable ? 'sortable' : ''}" data-col="${i}" style="width:${w}px" title="${escapeHtml(c.name)} · ${escapeHtml(c.dbType || '')}">
+      const colTitle = [c.name, c.dbType || '', c.comment || ''].filter(Boolean).join(' · ');
+      html += `<div class="gh-cell ${this.opts.sortable ? 'sortable' : ''}" draggable="true" data-col="${i}" style="width:${w}px" title="${escapeHtml(colTitle)}">
         <span class="col-name">${escapeHtml(c.name)}${isPk ? ' <span class="pk">PK</span>' : ''}${ind ? `<span class="sort-ind">${ind}</span>` : ''}</span>
         <span class="type">${escapeHtml((c.dbType || '').toLowerCase())}</span>
         <div class="gh-resizer" data-col="${i}"></div>
@@ -102,9 +111,31 @@ export class Grid {
     });
   }
 
-  cellText(value) {
+  cellText(value, col = null) {
     if (value === null || value === undefined) return 'NULL';
+    const formatted = this.timestampText(value, col);
+    if (formatted) return formatted;
     return String(value).replace(/\r?\n/g, ' ⏎ ');
+  }
+
+  timestampText(value, col) {
+    if (!this.timestampDisplay || !col) return null;
+    const type = String(col.dbType || '').toUpperCase();
+    if (type.includes('DATE') || type.includes('TIME')) return null;
+    const name = String(col.name || '').toLowerCase();
+    if (!/(^|_)(time|timestamp|ts|at|created|updated|deleted|expire|mtime|ctime)($|_)/.test(name) &&
+        !/(timestamp|_at|_time|^time$|created|updated)/.test(name)) return null;
+    const raw = String(value);
+    if (!/^\d{10,16}$/.test(raw)) return null;
+    let ms;
+    if (raw.length >= 16) ms = Number(raw.slice(0, 13));
+    else if (raw.length >= 13) ms = Number(raw.slice(0, 13));
+    else ms = Number(raw) * 1000;
+    if (!Number.isFinite(ms)) return null;
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime()) || d.getFullYear() < 2000 || d.getFullYear() > 2100) return null;
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
   cellClasses(value, col, row, ci) {
@@ -139,8 +170,11 @@ export class Grid {
       for (let c = 0; c < this.columns.length; c++) {
         const col = this.columns[c];
         const value = row[c];
-        const text = this.cellText(value);
-        const title = text.length > 40 ? text.slice(0, 400) : '';
+        const text = this.cellText(value, col);
+        const raw = value === null || value === undefined ? 'NULL' : String(value);
+        const title = text !== this.cellText(value) && text.length > 0
+          ? `${text} · raw: ${raw.slice(0, 300)}`
+          : (text.length > 40 ? text.slice(0, 400) : '');
         html += `<div class="${this.cellClasses(value, col, r, c)}" data-row="${r}" data-col="${c}" style="width:${this.widths[c]}px"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(text)}</div>`;
       }
       html += `</div>`;
@@ -227,7 +261,7 @@ export class Grid {
     this.rows[row][col] = value;
     const cell = this.canvas.querySelector(`.gc[data-row="${row}"][data-col="${col}"]`);
     if (!cell) return;
-    cell.textContent = this.cellText(value);
+    cell.textContent = this.cellText(value, this.columns[col]);
     cell.className = this.cellClasses(value, this.columns[col], row, col);
   }
 
@@ -238,6 +272,10 @@ export class Grid {
     this.select(hit.row, hit.col);
     const items = [];
     const value = this.rows[hit.row][hit.col];
+    if (this.opts.onDetail) {
+      items.push({ label: '查看详情', icon: 'file', action: () => this.opts.onDetail(hit.row, hit.col) });
+      items.push({ sep: true });
+    }
     items.push({ label: '复制单元格', icon: 'copy', shortcut: '⌘C', action: () => copyText(value === null ? '' : String(value)) });
     items.push({
       label: '复制整行 (TSV)', icon: 'rows', action: () => copyText(this.rows[hit.row].map((v) => (v === null ? '' : String(v))).join('\t')),
