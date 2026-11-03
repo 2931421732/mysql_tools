@@ -166,7 +166,7 @@ export class Grid {
       const odd = r % 2 ? ' odd' : '';
       const sel = this.selected.row === r ? ' selected' : '';
       html += `<div class="grid-row${odd}${sel}" data-row="${r}" style="transform:translateY(${r * ROW_H}px);width:${this.totalWidth()}px">`;
-      html += `<div class="rownum">${r + 1}</div>`;
+      html += `<div class="rowno">${r + 1}</div>`;
       for (let c = 0; c < this.columns.length; c++) {
         const col = this.columns[c];
         const value = row[c];

@@ -14,7 +14,7 @@ const $ = (sel) => document.querySelector(sel);
 const S = {
   version: VERSION,
   connections: [],
-  settings: { theme: 'dark', language: 'en', pageSize: 200, maxRows: 1000, fontSize: 13, fontFamily: 'system', background: '' },
+  settings: { theme: 'dark', language: 'en', pageSize: 200, maxRows: 1000, fontSize: 13, fontFamily: 'system', background: '', defaultSort: true },
   tabs: [],
   activeId: null,
   seq: 0,
@@ -992,7 +992,8 @@ function buildTableTab(tab) {
   tab.rowsError = '';
   tab.loadSeq = 0;
   tab.timestampDisplay = false;
-  tab.filterOpen = false;
+  tab.filterOpen = true;
+  tab.sortCleared = false;
 
   const root = h('div', { class: 'tt' });
   const title = h('div', { class: 'tt-title' },
@@ -1154,10 +1155,14 @@ async function loadTableRows(tab) {
       orderBy: tab.order,
       filters: tab.filters,
       count: tab.page === 0,
+      defaultSort: !!S.settings.defaultSort && !(tab.order?.length) && !tab.sortCleared,
     };
     const res = await withTabSession(tab, (sid) => apiPost('/api/rows', { ...body, session: sid }));
     if (seq !== tab.loadSeq) return;
     tab.rowsData = res;
+    if (!tab.order?.length && !tab.sortCleared && S.settings.defaultSort && res.primaryKey?.length) {
+      tab.order = res.primaryKey.map((c) => ({ column: c, desc: true }));
+    }
     if (res.total !== null && res.total !== undefined) tab.total = res.total;
     renderTableHead(tab);
     renderTableActions(tab);
@@ -1198,6 +1203,8 @@ function renderTableData(tab) {
   const filterWrap = h('div', { class: 'filter-wrap' }, buildFilterBar(tab));
   if (tab.filterOpen) filterWrap.append(buildFilterEditor(tab));
   tab.contentEl.append(filterWrap);
+  const qline = buildQueryLine(tab);
+  if (qline) tab.contentEl.append(qline);
 
   const host = h('div', { style: { flex: '1', minHeight: '0' } });
   tab.contentEl.append(host);
@@ -1207,6 +1214,7 @@ function renderTableData(tab) {
     emptyText: '没有行',
     onSort: (col, dir) => {
       tab.order = dir ? [{ column: col, desc: dir === 'desc' }] : [];
+      tab.sortCleared = !dir;
       tab.page = 0;
       loadTableRows(tab);
     },
@@ -1232,12 +1240,89 @@ function renderTableData(tab) {
   tab.contentEl.append(buildPager(tab));
 }
 
+function addFilterFromField(tab, column) {
+  tab.filters = [...(tab.filters || []), { column, op: '=', value: '', value2: '', connector: 'and' }];
+  tab.filterOpen = true;
+  renderTableContent(tab);
+  setTimeout(() => {
+    const inputs = [...document.querySelectorAll('.filter-editor .fb-input')].filter((x) => !x.disabled && !x.classList.contains('hidden'));
+    inputs[inputs.length - 1]?.focus();
+  }, 40);
+}
+
+function mysqlQuote(v) {
+  return "'" + String(v).replaceAll('\\', '\\\\').replaceAll("'", "\\'") + "'";
+}
+
+function effectiveTableSQL(tab) {
+  const parts = [];
+  const f = tab.filters || [];
+  for (let i = 0; i < f.length; i++) {
+    const x = f[i];
+    if (!x.column) continue;
+    const col = ident(x.column);
+    let cond = '';
+    const op = x.op;
+    if (op === 'is null' || op === 'is not null') {
+      cond = `${col} ${op.toUpperCase()}`;
+    } else if (op === 'in' || op === 'not in') {
+      const vals = String(x.value || '').split(',').map((v) => v.trim()).filter(Boolean).map(mysqlQuote);
+      if (!vals.length) continue;
+      cond = `${col} ${op.toUpperCase()} (${vals.join(', ')})`;
+    } else if (op === 'between' || op === 'not between') {
+      if (!x.value || !x.value2) continue;
+      cond = `${col} ${op.toUpperCase()} ${mysqlQuote(x.value)} AND ${mysqlQuote(x.value2)}`;
+    } else if (op === 'contains' || op === 'starts' || op === 'ends') {
+      const raw = String(x.value || '');
+      if (!raw) continue;
+      const val = op === 'contains' ? `%${raw}%` : op === 'starts' ? `${raw}%` : `%${raw}`;
+      cond = `${col} LIKE ${mysqlQuote(val)}`;
+    } else {
+      if (String(x.value || '').trim() === '') continue;
+      cond = `${col} ${op} ${mysqlQuote(x.value)}`;
+    }
+    parts.push((i > 0 ? (x.connector === 'or' ? ' OR ' : ' AND ') : '') + cond);
+  }
+  let sql = `SELECT * FROM ${ident(tab.db)}.${ident(tab.table)}`;
+  if (parts.length) sql += ' WHERE ' + parts.join('');
+  if (tab.order?.length) sql += ' ORDER BY ' + tab.order.map((o) => `${ident(o.column)} ${o.desc ? 'DESC' : 'ASC'}`).join(', ');
+  sql += ` LIMIT ${tab.pageSize} OFFSET ${tab.page * tab.pageSize}`;
+  return sql;
+}
+
+function buildQueryLine(tab) {
+  if (!tab.db || !tab.table) return null;
+  const sql = effectiveTableSQL(tab);
+  const bar = h('div', { class: 'query-line' },
+    h('span', { class: 'ql-label' }, 'SQL'),
+    h('span', { class: 'ql-text', title: sql }, sql),
+    h('button', { class: 'btn ghost sm icon', title: '复制查询', html: icon('copy'), onClick: () => copyText(sql) }),
+  );
+  return bar;
+}
+
 function buildFilterBar(tab) {
   const bar = h('div', { class: 'filter-bar' });
   const btn = h('button', { class: 'btn sm filter-open', html: icon('filter') + '<span>筛选 / 排序</span>' });
   btn.classList.toggle('primary', !!tab.filterOpen);
   btn.addEventListener('click', () => { tab.filterOpen = !tab.filterOpen; renderTableContent(tab); });
   bar.append(btn);
+  const cols = (tab.detail?.columns || tab.rowsData?.columns || []).map((c) => c.name);
+  const listId = 'filter-cols-' + tab.id;
+  const quick = h('input', { class: 'fb-quick', list: listId, placeholder: '输入字段，快速添加筛选…', spellcheck: 'false' });
+  const dl = h('datalist', { id: listId }, ...cols.map((c) => h('option', { value: c })));
+  const addByField = () => {
+    const typed = quick.value.trim().toLowerCase();
+    if (!typed) return;
+    const found = cols.find((c) => c.toLowerCase() === typed) ||
+      cols.find((c) => c.toLowerCase().startsWith(typed)) ||
+      cols.find((c) => c.toLowerCase().includes(typed));
+    if (!found) { toast('没有匹配的字段', 'warn', 2200); return; }
+    quick.value = '';
+    addFilterFromField(tab, found);
+  };
+  quick.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addByField(); } });
+  bar.append(quick, dl);
   const total = (tab.filters?.length || 0) + (tab.order?.length || 0);
   if (total) bar.append(h('span', { class: 'count-badge' }, String(total)));
   for (const f of tab.filters || []) {
@@ -1251,7 +1336,7 @@ function buildFilterBar(tab) {
     bar.append(h('span', { class: 'filter-chip sort' }, h('b', {}, o.column), o.desc ? ' ↓' : ' ↑'));
   }
   if (total) {
-    bar.append(h('button', { class: 'btn ghost sm', onClick: () => { tab.filters = []; tab.order = []; tab.page = 0; renderTableContent(tab); loadTableRows(tab); } }, '清除'));
+    bar.append(h('button', { class: 'btn ghost sm', onClick: () => { tab.filters = []; tab.order = []; tab.sortCleared = true; tab.page = 0; renderTableContent(tab); loadTableRows(tab); } }, '清除'));
   }
   bar.addEventListener('dragover', (e) => { e.preventDefault(); bar.classList.add('drag-over'); });
   bar.addEventListener('dragleave', () => bar.classList.remove('drag-over'));
@@ -1370,6 +1455,7 @@ function buildFilterEditor(tab) {
     }
     tab.filters = filters;
     tab.order = draft.order.filter((o) => o.column);
+    tab.sortCleared = tab.order.length === 0;
     tab.page = 0;
     tab.filterOpen = false;
     renderTableContent(tab);
@@ -2363,6 +2449,8 @@ async function openSettings(section = 'general') {
   const fontSize = h('input', { class: 'input', type: 'number', min: 11, max: 24, value: S.settings.fontSize || 13 });
   const pageSize = h('input', { class: 'input', type: 'number', value: S.settings.pageSize });
   const maxRows = h('input', { class: 'input', type: 'number', value: S.settings.maxRows });
+  const defaultSort = h('input', { type: 'checkbox' });
+  defaultSort.checked = S.settings.defaultSort !== false;
 
   const bgPreview = h('div', { class: 'bg-preview' });
   const bgFile = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif', class: 'bg-file-input' });
@@ -2423,6 +2511,7 @@ async function openSettings(section = 'general') {
     field('编辑区字号', fontSize),
     field('每页行数', pageSize, '表数据浏览的默认分页大小'),
     field('查询最大行数', maxRows, '单次查询最多返回的行数'),
+    h('div', { class: 'field wide' }, h('label', { class: 'check' }, defaultSort, h('span', {}, '默认按主键倒序（无主键不生效）'))),
     h('div', { class: 'field wide' }, h('label', {}, '背景图片'), bgPreview, h('div', { class: 'row gap-8' }, bgPick, bgClear), bgHint),
   );
 
@@ -2491,6 +2580,7 @@ async function openSettings(section = 'general') {
       pageSize: Math.max(10, Math.min(5000, Number(pageSize.value) || 200)),
       maxRows: Math.max(10, Math.min(100000, Number(maxRows.value) || 1000)),
       background: bgName,
+      defaultSort: defaultSort.checked,
     });
     try {
       await apiPost('/api/settings', S.settings);

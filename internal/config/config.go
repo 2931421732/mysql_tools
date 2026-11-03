@@ -81,17 +81,18 @@ type storedConnection struct {
 
 // Settings holds UI preferences that survive restarts.
 type Settings struct {
-	Theme      string `json:"theme"`
-	Language   string `json:"language"` // en | zh
-	PageSize   int    `json:"pageSize"`
-	MaxRows    int    `json:"maxRows"`
-	FontSize   int    `json:"fontSize"`   // editor font size
-	FontFamily string `json:"fontFamily"` // system | mono | serif
-	Background string `json:"background"` // stored image filename, empty = none
+	Theme       string `json:"theme"`
+	Language    string `json:"language"` // en | zh
+	PageSize    int    `json:"pageSize"`
+	MaxRows     int    `json:"maxRows"`
+	FontSize    int    `json:"fontSize"`    // editor font size
+	FontFamily  string `json:"fontFamily"`  // system | mono | serif
+	Background  string `json:"background"`  // stored image filename, empty = none
+	DefaultSort bool   `json:"defaultSort"` // order by primary key DESC when no explicit sort
 }
 
 func DefaultSettings() Settings {
-	return Settings{Theme: "dark", Language: "en", PageSize: 200, MaxRows: 1000, FontSize: 13, FontFamily: "system"}
+	return Settings{Theme: "dark", Language: "en", PageSize: 200, MaxRows: 1000, FontSize: 13, FontFamily: "system", DefaultSort: true}
 }
 
 // SavedQuery is a user-named SQL snippet scoped to a connection endpoint.
@@ -438,6 +439,12 @@ func (s *Store) loadSettings() error {
 	var v Settings
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil // tolerate corrupt settings
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		if _, ok := probe["defaultSort"]; ok {
+			s.settings.DefaultSort = v.DefaultSort
+		}
 	}
 	if v.PageSize > 0 {
 		s.settings.PageSize = v.PageSize

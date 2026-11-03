@@ -25,13 +25,14 @@ type RowOrder struct {
 }
 
 type RowsRequest struct {
-	Database string      `json:"database"`
-	Table    string      `json:"table"`
-	Limit    int         `json:"limit"`
-	Offset   int         `json:"offset"`
-	Order    []RowOrder  `json:"orderBy"`
-	Filters  []RowFilter `json:"filters"`
-	Count    bool        `json:"count"`
+	Database    string      `json:"database"`
+	Table       string      `json:"table"`
+	Limit       int         `json:"limit"`
+	Offset      int         `json:"offset"`
+	Order       []RowOrder  `json:"orderBy"`
+	Filters     []RowFilter `json:"filters"`
+	Count       bool        `json:"count"`
+	DefaultSort bool        `json:"defaultSort"`
 }
 
 type RowsResult struct {
@@ -93,7 +94,13 @@ func (s *Session) Rows(ctx context.Context, req RowsRequest) (*RowsResult, error
 	if err != nil {
 		return nil, err
 	}
-	order, err := buildOrder(colMap, pk, req.Order)
+	orderReq := req.Order
+	if len(orderReq) == 0 && req.DefaultSort && len(pk) > 0 {
+		for _, name := range pk {
+			orderReq = append(orderReq, RowOrder{Column: name, Desc: true})
+		}
+	}
+	order, err := buildOrder(colMap, pk, orderReq)
 	if err != nil {
 		return nil, err
 	}
