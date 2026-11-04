@@ -21,6 +21,7 @@ const S = {
   activeId: null,
   seq: 0,
   conns: new Map(),
+  tableDetails: new Map(),
   search: '',
 };
 
@@ -212,7 +213,42 @@ function updateStatusForTab(tab) {
 /* sidebar / tree                                                     */
 /* ------------------------------------------------------------------ */
 
+function tableCacheKey(connId, db, table) { return `${connId}|${db}|${table}`; }
+
+async function refreshDatabase(connId, dbName) {
+  const cs = connState(connId);
+  try {
+    const sid = await ensureTreeSession(connId);
+    const objs = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(dbName)}`);
+    cs.objects.set(dbName, objs);
+    for (const key of [...S.tableDetails.keys()]) {
+      if (key.startsWith(`${connId}|${dbName}|`)) S.tableDetails.delete(key);
+    }
+    for (const tab of S.tabs) {
+      if (tab.kind === 'table' && tab.connId === connId && tab.db === dbName) {
+        tab.detail = null;
+        loadTableDetail(tab);
+      }
+    }
+    renderTree();
+    toast(`已刷新 ${dbName} 的结构`, 'ok', 2200);
+  } catch (err) { toast(err.message, 'err', 5000); }
+}
+
+async function refreshTableDetail(connId, db, table) {
+  S.tableDetails.delete(tableCacheKey(connId, db, table));
+  let tab = S.tabs.find((t) => t.kind === 'table' && t.connId === connId && t.db === db && t.table === table);
+  if (!tab) tab = openTable(connId, db, table);
+  else {
+    activateTab(tab.id);
+    tab.detail = null;
+    await loadTableDetail(tab);
+    loadTableRows(tab);
+  }
+}
+
 function refreshTree() {
+  S.tableDetails.clear();
   for (const cs of S.conns.values()) {
     cs.databases = null;
     cs.objects.clear();
@@ -345,7 +381,11 @@ function renderConnNode(conn, cs, q, connHit) {
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
       { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, conn.database || '', '') },
-      { label: '刷新', icon: 'refresh', action: () => { cs.databases = null; cs.objects.clear(); renderTree(); } },
+      { label: '刷新', icon: 'refresh', action: () => {
+        cs.databases = null; cs.objects.clear();
+        for (const key of [...S.tableDetails.keys()]) if (key.startsWith(`${conn.id}|`)) S.tableDetails.delete(key);
+        renderTree();
+      } },
       { sep: true },
       { label: '编辑连接', icon: 'pencil', action: () => openConnectionDialog(conn) },
       { label: '删除连接', icon: 'trash', danger: true, action: () => deleteConnection(conn) },
@@ -385,7 +425,7 @@ function renderDbNode(conn, cs, db, q) {
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
       { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, db.name, '') },
-      { label: '刷新对象', icon: 'refresh', action: () => { cs.objects.delete(db.name); toggleDb(conn.id, db.name, true); } },
+      { label: '刷新库结构', icon: 'refresh', action: () => refreshDatabase(conn.id, db.name) },
       { label: '快速导出…', icon: 'download', action: () => openDatabaseExport(conn.id, db.name) },
       { label: '复制库名', icon: 'copy', action: () => copyText(db.name) },
     ]);
@@ -423,6 +463,7 @@ function renderTableNode(conn, db, obj) {
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
       { label: '打开数据', icon: 'table', action: () => openTable(conn.id, db.name, obj.name) },
+      { label: '刷新表结构', icon: 'refresh', action: () => refreshTableDetail(conn.id, db.name, obj.name) },
       { label: '新建查询', icon: 'terminal', action: () => openQuery(conn.id, db.name, `SELECT * FROM ${ident(db.name)}.${ident(obj.name)} LIMIT 100;`) },
       { sep: true },
       { label: '导出 CSV', icon: 'download', action: () => exportTableFromTree(conn.id, db.name, obj.name) },
@@ -1164,7 +1205,10 @@ function renderTableActions(tab) {
   const host = tab.actionsEl;
   host.innerHTML = '';
   const isView = tab.detail?.type === 'VIEW' || tab.rowsData?.type === 'VIEW';
-  const refresh = h('button', { class: 'btn ghost sm icon', title: '刷新', html: icon('refresh'), onClick: () => { loadTableDetail(tab); loadTableRows(tab); } });
+  const refresh = h('button', { class: 'btn ghost sm icon', title: '刷新', html: icon('refresh'), onClick: () => {
+    S.tableDetails.delete(tableCacheKey(tab.connId, tab.db, tab.table));
+    loadTableDetail(tab); loadTableRows(tab);
+  } });
   const exportBtn = h('button', { class: 'btn sm', title: '导出 CSV', html: icon('download') + '<span>CSV</span>', onClick: () => exportTable(tab) });
   const xlsxBtn = h('button', { class: 'btn sm', title: '导出 Excel', html: icon('download') + '<span>Excel</span>', onClick: () => exportTableXLSX(tab) });
   const tsBtn = h('button', { class: 'btn sm', title: '时间戳转可读时间（不修改原始数据）', html: icon('clock') + '<span>时间</span>', onClick: () => {
@@ -1200,8 +1244,18 @@ function renderTableActions(tab) {
 }
 
 async function loadTableDetail(tab) {
+  const key = tableCacheKey(tab.connId, tab.db, tab.table);
+  if (S.tableDetails.has(key)) {
+    tab.detail = S.tableDetails.get(key);
+    renderTableHead(tab);
+    renderTableActions(tab);
+    renderTableContent(tab);
+    return;
+  }
   try {
-    tab.detail = await withTabSession(tab, (sid) => apiGet(`/api/table?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(tab.db)}&table=${encodeURIComponent(tab.table)}`));
+    const detail = await withTabSession(tab, (sid) => apiGet(`/api/table?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(tab.db)}&table=${encodeURIComponent(tab.table)}`));
+    S.tableDetails.set(key, detail);
+    tab.detail = detail;
     renderTableHead(tab);
     renderTableActions(tab);
     renderTableContent(tab);
@@ -1483,8 +1537,10 @@ function buildFilterEditor(tab) {
 
   const editor = h('div', { class: 'filter-editor' },
     h('datalist', { id: 'filter-fields-' + tab.id }, ...cols.map((c) => h('option', { value: c }))),
-    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '筛选条件 / WHERE', h('span', { class: 'spacer' }), addCond), condBox),
-    h('div', { class: 'fb-section' }, h('div', { class: 'fb-title' }, '排序', h('span', { class: 'spacer' }), addSort), sortBox),
+    h('div', { class: 'fb-merged' },
+      h('div', { class: 'fb-col' }, h('div', { class: 'fb-title' }, '筛选条件 / WHERE', h('span', { class: 'spacer' }), addCond), condBox),
+      h('div', { class: 'fb-col' }, h('div', { class: 'fb-title' }, '排序 / ORDER BY', h('span', { class: 'spacer' }), addSort), sortBox),
+    ),
     h('div', { class: 'fb-footer' }, reset, h('span', { class: 'spacer' }), cancel, apply),
   );
   renderConditions();
