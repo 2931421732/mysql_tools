@@ -128,3 +128,68 @@ func (c *Client) do(ctx context.Context, reqBody chatRequest) (string, Usage, in
 	}
 	return parsed.Choices[0].Message.Content, parsed.Usage, res.StatusCode, nil
 }
+
+// ListModels returns the model IDs currently served by the configured
+// OpenAI-compatible endpoint.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	if strings.TrimSpace(c.APIKey) == "" {
+		return nil, fmt.Errorf("DeepSeek API Key 未配置")
+	}
+	base := strings.TrimRight(c.BaseURL, "/")
+	base = strings.TrimSuffix(base, "/chat/completions")
+	if base == "" {
+		return nil, fmt.Errorf("Base URL 不能为空")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		if len(msg) > 400 {
+			msg = msg[:400]
+		}
+		return nil, fmt.Errorf("DeepSeek /models %d: %s", res.StatusCode, msg)
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []string `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("cannot parse /models response: %w", err)
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(parsed.Data)+len(parsed.Models))
+	for _, m := range parsed.Data {
+		if m.ID != "" && !seen[m.ID] {
+			seen[m.ID] = true
+			out = append(out, m.ID)
+		}
+	}
+	for _, m := range parsed.Models {
+		if m != "" && !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("/models 没有返回模型")
+	}
+	return out, nil
+}

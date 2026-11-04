@@ -63,14 +63,14 @@ Why Go:
 
 ### DeepSeek assistant
 
-- Configure the **Base URL / model / API key** in **Settings → DeepSeek**; `deepseek-chat` and `deepseek-reasoner` are supported. The API key is stored server-side with AES-256-GCM; the frontend only sees "configured".
+- Configure the **Base URL / API key** in **Settings → DeepSeek**; the model dropdown is populated from the endpoint's `/models` response (with a refresh button). The API key is stored server-side with AES-256-GCM; the frontend only sees "configured".
 - **Permission modes**: `Read-only` (SELECT/SHOW/EXPLAIN), `Modify` (+INSERT/UPDATE/REPLACE), `Delete` (+DELETE/DDL). Permissions are enforced server-side; the regular SQL editor is not restricted by them.
 - **Generates SQL only by default**: the assistant returns SQL cards, a risk level, and index/EXPLAIN hints. Nothing runs until you click execute, and write/delete operations must additionally be reviewed and confirmed with a checkbox in a dialog.
 - **Indexes first**: the schema context includes primary keys, unique keys, secondary indexes, and cardinality; generated SQL is automatically `EXPLAIN`ed, and a full table scan over 1000 rows raises a warning.
 - **Multiple databases**: select several databases in the panel; SQL must qualify tables as `db.table`, and the execution session has no default database.
 - **Value-driven**: right-click a table row → "have the AI modify this row" attaches the selected row; the model may issue at most 2 read-only probes (server-enforced LIMIT 50) before producing the final SQL.
-- **Attachments**: use the paperclip in the assistant to attach `.xlsx/.xlsm/.csv/.tsv/.txt/.sql/.md/.json` (max 20 MB, up to 3). Tabular files are parsed into sheets/headers/preview and can be handed to the existing import wizard for the currently open table; text/SQL files are added as bounded, untrusted context. Attachments are sent to the configured DeepSeek endpoint — do not attach sensitive data you do not want to share.
-- **Attachment safety**: attachment text is marked untrusted in the prompt; the assistant must not follow instructions found inside attachments, and still only proposes SQL (never executes it).
+- **Attachments**: use the paperclip to attach spreadsheets, logs and source code (`.xlsx/.xlsm/.csv/.tsv/.log/.out/.err/.trace/.go/.py/.js/.ts/.java/.c/.cpp/.cs/.php/.rb/.rs/.swift/.sql/.md/.json/.yaml/.toml/.xml` and more; max 20 MB, up to 3). Tabular files can be handed to the import wizard; logs keep head + tail and source files are bounded excerpts. Without a selected database, the assistant can still analyze attachments. Attachments are sent to the configured DeepSeek endpoint — do not attach sensitive data you do not want to share.
+- **Attachment safety**: attachment text is marked untrusted in the prompt; the assistant must not follow instructions found inside attachments. Database requests still only propose SQL; log/source analysis is returned as text and never executed.
 - **UX**: dark/light themes, resizable sidebar and editor area, native window, `⌘T` / `⌘N` / `⌘W` / `⌘K` shortcuts.
 
 | Data browsing | SQL workbench |

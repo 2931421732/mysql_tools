@@ -1,4 +1,4 @@
-VERSION ?= 0.5.6
+VERSION ?= 0.5.7
 GOFLAGS ?= -mod=vendor
 
 .PHONY: build run app dev-db test clean

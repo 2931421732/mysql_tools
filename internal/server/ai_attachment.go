@@ -94,19 +94,22 @@ func (s *Server) handleAIAttachment(w http.ResponseWriter, r *http.Request) {
 			info.RowCount = len(rows) - 1
 		}
 		info.Sheets = []importSheet{{Name: "Data", Rows: len(rows), Columns: len(rows[0])}}
-	case ".txt", ".sql", ".md", ".markdown", ".json", ".log":
+	case ".txt", ".text", ".log", ".out", ".err", ".trace", ".sql", ".md", ".markdown", ".json",
+		".yaml", ".yml", ".toml", ".ini", ".conf", ".properties", ".xml", ".html", ".css",
+		".go", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cc",
+		".cs", ".php", ".rb", ".rs", ".swift", ".sh", ".vue", ".svelte", ".diff", ".patch", ".dockerfile":
 		id, err := s.imports.putExt(data, hdr.Filename, ".txt")
 		if err != nil {
 			fail(w, http.StatusInternalServerError, err)
 			return
 		}
 		text := strings.ToValidUTF8(string(data), "\uFFFD")
-		if len(text) > 4000 {
-			text = text[:4000] + "\n…"
+		if len(text) > 6000 {
+			text = text[:6000] + "\n…"
 		}
 		info.ID, info.Kind, info.Text = id, "text", text
 	default:
-		fail(w, http.StatusBadRequest, errors.New("supported attachments: xlsx, xlsm, csv, tsv, txt, sql, md, json, log"))
+		fail(w, http.StatusBadRequest, errors.New("supported attachments: xlsx, xlsm, csv, tsv, txt, logs, source code, sql, md, json, yaml, xml and more"))
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -229,6 +232,7 @@ func (s *Server) attachmentContext(ids []string) (string, error) {
 			return "", errors.New("attachment expired or not found")
 		}
 		ext := strings.ToLower(filepath.Ext(fi.path))
+		nameExt := strings.ToLower(filepath.Ext(fi.name))
 		fmt.Fprintf(&b, "\n[Attachment %d: %s]\n", i+1, fi.name)
 		if ext == ".xlsx" {
 			sheets, sheet, headers, preview, rows, err := xlsxAttachmentMeta(fi.path)
@@ -261,18 +265,53 @@ func (s *Server) attachmentContext(ids []string) (string, error) {
 				return "", err
 			}
 			text := strings.ToValidUTF8(string(data), "\uFFFD")
-			if len(text) > 8000 {
-				text = text[:8000] + "\n…truncated"
+			lines := strings.Count(text, "\n") + 1
+			kind := "text"
+			if isLogName(nameExt) {
+				kind = "service log"
+			} else if isSourceName(nameExt) {
+				kind = "source code"
 			}
-			fmt.Fprintf(&b, "text attachment:\n%s\n", text)
+			text = clipAttachmentText(text, kind == "service log")
+			fmt.Fprintf(&b, "%s attachment; lines=%d:\n%s\n", kind, lines, text)
 		}
-		if b.Len() > 16000 {
+		if b.Len() > 60000 {
 			break
 		}
 	}
 	out := b.String()
-	if len(out) > 18000 {
-		out = out[:18000] + "\n…truncated"
+	if len(out) > 65000 {
+		out = out[:65000] + "\n…truncated"
 	}
 	return out, nil
+}
+
+func isLogName(ext string) bool {
+	switch ext {
+	case ".log", ".out", ".err", ".trace":
+		return true
+	}
+	return false
+}
+
+func isSourceName(ext string) bool {
+	switch ext {
+	case ".go", ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cc",
+		".cs", ".php", ".rb", ".rs", ".swift", ".sh", ".vue", ".svelte", ".sql":
+		return true
+	}
+	return false
+}
+
+// Logs keep both the beginning and the end; source/text keep the beginning.
+func clipAttachmentText(text string, log bool) string {
+	const max = 30000
+	if len(text) <= max {
+		return text
+	}
+	if log {
+		head, tail := 7000, max-7000-40
+		return text[:head] + "\n…[middle of log truncated]…\n" + text[len(text)-tail:]
+	}
+	return text[:max] + "\n…truncated"
 }

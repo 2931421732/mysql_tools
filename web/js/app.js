@@ -2663,8 +2663,32 @@ async function openSettings(section = 'general') {
   const aiEnabled = h('input', { type: 'checkbox' });
   aiEnabled.checked = !!ai.enabled;
   const aiBase = h('input', { class: 'input', value: ai.baseURL || 'https://api.deepseek.com' });
-  const aiModel = h('input', { class: 'input', value: ai.model || 'deepseek-chat', placeholder: 'deepseek-chat' });
   const aiKey = h('input', { class: 'input', type: 'password', placeholder: ai.hasKey ? '已保存，留空保持不变' : 'sk-…' });
+  const aiModel = h('select', { class: 'input' });
+  const aiModelStatus = h('span', { class: 'hint' }, '');
+  const aiModelRefresh = h('button', { class: 'btn sm', type: 'button' }, '刷新模型');
+  const aiModelFallback = ['deepseek-chat', 'deepseek-reasoner'];
+  const setAIModels = (list, note = '') => {
+    const current = aiModel.value || ai.model || 'deepseek-chat';
+    const all = [...new Set((list?.length ? list : aiModelFallback).filter(Boolean))];
+    aiModel.innerHTML = '';
+    for (const id of all) aiModel.append(h('option', { value: id }, id));
+    aiModel.value = all.includes(current) ? current : all[0];
+    aiModelStatus.textContent = note;
+  };
+  let modelsLoaded = false;
+  const loadAIModels = async () => {
+    modelsLoaded = true;
+    aiModelRefresh.disabled = true;
+    aiModelStatus.textContent = '正在获取服务端模型…';
+    try {
+      const res = await apiPost('/api/ai/models', { baseURL: aiBase.value.trim(), apiKey: aiKey.value });
+      setAIModels(res.models || [], `已获取 ${res.models?.length || 0} 个模型`);
+    } catch (err) {
+      setAIModels([], err.message);
+    } finally { aiModelRefresh.disabled = false; }
+  };
+  setAIModels([]);
   const aiPermission = h('select', { class: 'input' },
     h('option', { value: 'readonly' }, '只读（只能 SELECT / SHOW / EXPLAIN）'),
     h('option', { value: 'modify' }, '可修改（允许 INSERT / UPDATE / REPLACE）'),
@@ -2686,7 +2710,7 @@ async function openSettings(section = 'general') {
   const aiForm = h('div', { class: 'form-grid' },
     h('div', { class: 'field wide' }, h('label', { class: 'check' }, aiEnabled, h('span', {}, '启用助手'))),
     field('Base URL', aiBase, 'OpenAI-compatible endpoint'),
-    field('模型', aiModel),
+    h('div', { class: 'field' }, h('label', {}, '模型'), h('div', { class: 'ai-model-row' }, aiModel, aiModelRefresh), aiModelStatus),
     field('API Key', aiKey, '仅保存在服务端，使用 AES-256-GCM 加密；不会回传到浏览器。'),
     field('权限模式', aiPermission, '权限在服务端强制校验；写操作仍需在弹窗中确认。'),
     h('div', { class: 'field wide' }, h('label', { class: 'check' }, aiExplain, h('span', {}, '生成后自动 EXPLAIN，提示全表扫描'))),
@@ -2704,12 +2728,16 @@ async function openSettings(section = 'general') {
     aiBtn.classList.toggle('primary', active === 'ai');
   };
   generalBtn.addEventListener('click', () => { active = 'general'; render(); });
-  aiBtn.addEventListener('click', () => { active = 'ai'; render(); });
+  aiBtn.addEventListener('click', () => { active = 'ai'; render(); if (!modelsLoaded) loadAIModels(); });
   tabBar.append(generalBtn, aiBtn);
   content.append(general);
   const body = h('div', {}, tabBar, content);
   const m = openModal({ title: '设置', subtitle: 'General · DeepSeek', body, wide: true });
   render();
+  aiModelRefresh.addEventListener('click', loadAIModels);
+  aiBase.addEventListener('change', loadAIModels);
+  aiKey.addEventListener('change', loadAIModels);
+  if (active === 'ai' || ai.hasKey) loadAIModels();
 
   const save = h('button', { class: 'btn primary' }, '保存');
   const cancel = h('button', { class: 'btn' }, '取消');

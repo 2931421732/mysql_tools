@@ -45,7 +45,7 @@ function buildPanel(ctx) {
   const closeBtn = h('button', { class: 'btn ghost sm icon', title: '关闭', html: icon('x') });
   const head = h('div', { class: 'ai-head' },
     h('span', { class: 'ai-logo', html: icon('sparkles') }),
-    h('div', { class: 'ai-title' }, 'DeepSeek 助手', h('span', { class: 'ai-sub' }, '默认只生成 SQL，执行前确认')),
+    h('div', { class: 'ai-title' }, 'DeepSeek 助手', h('span', { class: 'ai-sub' }, 'SQL / 日志分析 · 执行前确认')),
     modeBadge,
     settingsBtn, closeBtn,
   );
@@ -57,7 +57,7 @@ function buildPanel(ctx) {
   const input = h('textarea', { class: 'ai-input', placeholder: '描述你想查或改什么，例如：按国家统计客户数与余额，按余额倒序', spellcheck: 'false' });
   const attachInput = h('input', {
     type: 'file', class: 'ai-file-input',
-    accept: '.xlsx,.xlsm,.csv,.tsv,.txt,.sql,.md,.markdown,.json,.log',
+    accept: '.xlsx,.xlsm,.csv,.tsv,.txt,.sql,.md,.markdown,.json,.log,.out,.err,.trace,.yaml,.yml,.toml,.ini,.conf,.properties,.xml,.html,.css,.go,.py,.js,.ts,.jsx,.tsx,.java,.kt,.c,.h,.cpp,.hpp,.cc,.cs,.php,.rb,.rs,.swift,.sh,.vue,.svelte',
   });
   const attachBtn = h('label', { class: 'btn ghost sm icon ai-attach', title: 'Attach file', html: icon('paperclip') }, attachInput);
   const attachmentsBox = h('div', { class: 'ai-attachments hidden' });
@@ -65,7 +65,7 @@ function buildPanel(ctx) {
   const composer = h('div', { class: 'ai-compose' }, rowCtx, attachmentsBox, input,
     h('div', { class: 'ai-compose-bar' },
       attachBtn,
-      h('span', { class: 'faint ai-attach-hint' }, 'xlsx / csv / sql / text'),
+      h('span', { class: 'faint ai-attach-hint' }, 'xlsx / csv / 日志 / 源代码'),
       h('span', { class: 'flex-1' }), h('span', { class: 'faint' }, '⌘↩ 发送'), sendBtn));
   panel.append(head, notice, scopeBox, messages, composer);
   panel._ui = { modeBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn, attachInput, attachBtn, attachmentsBox };
@@ -319,8 +319,11 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
   if (!live.state?.enabled || !live.state?.hasKey) { toast('请先配置并启用 DeepSeek', 'warn', 3000); return; }
-  if (!live.selectedDbs.size) { toast('请至少选择一个数据库', 'warn'); return; }
-  await ensureSession();
+  if (!live.selectedDbs.size && !(live.attachments || []).length) {
+    toast('请选择数据库，或先上传日志/源代码附件', 'warn', 3500);
+    return;
+  }
+  if (live.selectedDbs.size) await ensureSession();
   live.busy = true;
   live.panel._ui.sendBtn.disabled = true;
   live.history.push({ role: 'user', content: text });
@@ -331,7 +334,7 @@ async function sendMessage() {
   live.panel._ui.messages.scrollTop = 1e9;
   try {
     const payload = {
-      session: live.sessionId,
+      session: live.sessionId || '',
       databases: [...live.selectedDbs],
       currentDatabase: firstDb(),
       messages: live.history.map((m) => ({ role: m.role, content: m.content })),
@@ -402,7 +405,11 @@ function confirmWrite(r) {
       h('pre', { class: 'ai-sql-code' }, r.sql),
       h('label', { class: 'ai-confirm-check' }, check, ' 我已核对 SQL，确认执行'),
     );
-    const cancel = h('button', { class: 'btn' }, '取消');
+    refreshModels.addEventListener('click', loadModels);
+  baseURL.addEventListener('change', loadModels);
+  key.addEventListener('change', loadModels);
+  loadModels();
+  const cancel = h('button', { class: 'btn' }, '取消');
     const run = h('button', { class: 'btn danger', disabled: true }, '确认执行');
     check.addEventListener('change', () => { run.disabled = !check.checked; });
     cancel.addEventListener('click', () => { finish(false); m.close(); });
@@ -433,10 +440,32 @@ function openAISettings() {
   const enabled = h('input', { type: 'checkbox' });
   enabled.checked = !!st.enabled;
   const baseURL = h('input', { class: 'input', value: st.baseURL || 'https://api.deepseek.com' });
-  const model = h('select', { class: 'input' },
-    h('option', { value: 'deepseek-chat' }, 'deepseek-chat'),
-    h('option', { value: 'deepseek-reasoner' }, 'deepseek-reasoner'));
+  const model = h('select', { class: 'input' });
+  const modelStatus = h('span', { class: 'hint' }, '');
+  const refreshModels = h('button', { class: 'btn sm', type: 'button' }, '刷新模型');
+  const fallbackModels = ['deepseek-chat', 'deepseek-reasoner'];
+  const setModels = (list, note = '') => {
+    const current = model.value || st.model || 'deepseek-chat';
+    const all = [...new Set((list?.length ? list : fallbackModels).filter(Boolean))];
+    model.innerHTML = '';
+    for (const id of all) model.append(h('option', { value: id }, id));
+    model.value = all.includes(current) ? current : all[0];
+    modelStatus.textContent = note;
+  };
+  const loadModels = async () => {
+    refreshModels.disabled = true;
+    modelStatus.textContent = '正在从服务端获取模型…';
+    try {
+      const res = await apiPost('/api/ai/models', { baseURL: baseURL.value.trim(), apiKey: key.value.trim() });
+      setModels(res.models || [], `已获取 ${res.models?.length || 0} 个模型`);
+    } catch (err) {
+      setModels([], err.message);
+    } finally {
+      refreshModels.disabled = false;
+    }
+  };
   model.value = st.model || 'deepseek-chat';
+  setModels([]);
   const permission = h('select', { class: 'input' },
     h('option', { value: 'readonly' }, '只读（只能 SELECT / SHOW / EXPLAIN）'),
     h('option', { value: 'modify' }, '可修改（允许 INSERT / UPDATE / REPLACE）'),
@@ -450,7 +479,7 @@ function openAISettings() {
     h('div', { class: 'form-grid' },
       h('div', { class: 'field span2' }, h('label', {}, 'DeepSeek API'), h('div', { class: 'ai-toggle-line' }, h('label', { class: 'switch' }, enabled, h('span')), h('span', { class: 'faint' }, '启用助手'))),
       h('div', { class: 'field span2' }, h('label', {}, 'Base URL'), baseURL),
-      h('div', { class: 'field' }, h('label', {}, '模型'), model),
+      h('div', { class: 'field' }, h('label', {}, '模型'), h('div', { class: 'ai-model-row' }, model, refreshModels), modelStatus),
       h('div', { class: 'field' }, h('label', {}, '权限模式'), permission),
       h('div', { class: 'field span2' }, h('label', {}, 'API Key'), key, h('span', { class: 'hint' }, '仅保存在服务端，使用 AES-256-GCM 加密；不会回传到浏览器。')),
       h('div', { class: 'field span2' }, h('label', { class: 'ai-check-line' }, autoExplain, ' 生成后自动 EXPLAIN，提示全表扫描')),
@@ -475,6 +504,10 @@ function openAISettings() {
       test.disabled = false;
     }
   });
+  refreshModels.addEventListener('click', loadModels);
+  baseURL.addEventListener('change', loadModels);
+  key.addEventListener('change', loadModels);
+  loadModels();
   const cancel = h('button', { class: 'btn' }, '取消');
   cancel.addEventListener('click', () => m.close());
   const save = h('button', { class: 'btn primary' }, '保存');

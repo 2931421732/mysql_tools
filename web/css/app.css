@@ -838,3 +838,6 @@ html.native-shell .modal-overlay { padding-top: 50px; }
 .fb-merged .fb-title { margin-bottom: 8px; }
 .fb-merged .fb-section { border: 0; padding: 0; background: transparent; }
 @media (max-width: 900px) { .fb-merged { grid-template-columns: 1fr; } .fb-merged .fb-col + .fb-col { border-left: 0; border-top: 1px solid var(--border-soft); } }
+
+.ai-model-row { display: flex; align-items: center; gap: 6px; }
+.ai-model-row select { flex: 1; min-width: 0; }
