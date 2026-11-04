@@ -25,6 +25,17 @@ func TestNCXPasswordRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNCXPKCS7Vector(t *testing.T) {
+	got, err := decryptNCXPassword("32179ad75953e86060e73da8a84ae2b4")
+	if err != nil || got != "secret" {
+		t.Fatalf("decrypt = %q, %v", got, err)
+	}
+	enc, err := encryptNCXPassword("secret")
+	if err != nil || enc != "32179ad75953e86060e73da8a84ae2b4" {
+		t.Fatalf("encrypt = %q, %v", enc, err)
+	}
+}
+
 func TestNCXRealShape(t *testing.T) {
 	xml := `<?xml version="1.0"?><Connections Ver="1.5">
 <Connection ConnectionName="Shop MySQL" ConnType="MYSQL" Host="db.example.com" Port="3306" Database="shop" UserName="shop_app" Password="00000000000000000000000000000000" SavePassword="true" SSL="false" SSH="true" SSH_Host="bastion" SSH_Port="2222" SSH_UserName="deploy" SSH_AuthenMethod="PASSWORD" SSH_Password="" SSH_PrivateKey="" HTTP="false"/>
