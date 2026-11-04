@@ -22,7 +22,7 @@ import (
 //go:embed server.exe
 var serverExe []byte
 
-const version = "0.5.3"
+const version = "0.5.4"
 
 func main() {
 	base := filepath.Join(os.Getenv("LOCALAPPDATA"), "NavMini")

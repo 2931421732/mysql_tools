@@ -823,3 +823,11 @@ html.native-shell .modal-overlay { padding-top: 50px; }
 
 .export-conn-list { max-height: 280px; overflow: auto; display: flex; flex-direction: column; gap: 5px; padding: 8px; border: 1px solid var(--border-soft); border-radius: var(--radius); }
 .export-conn-list .check { font-size: 11.5px; }
+
+.conflict-list { margin: 4px 0 10px; padding-left: 20px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.conn-bulk { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); font-size: 11px; }
+.conn-bulk .check { font-size: 11px; }
+.conn-bulk .spacer { flex: 1; }
+.conn-check { width: 13px; height: 13px; accent-color: var(--accent); }
+.node-row.conn-checked { background: var(--accent-dim); }

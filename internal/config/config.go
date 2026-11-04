@@ -315,6 +315,23 @@ func (s *Store) Upsert(in Connection) (Connection, error) {
 	return out, nil
 }
 
+func (s *Store) DeleteMany(ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	drop := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		drop[id] = true
+	}
+	out := s.conns[:0]
+	for _, c := range s.conns {
+		if !drop[c.ID] {
+			out = append(out, c)
+		}
+	}
+	s.conns = out
+	return s.saveConnectionsLocked()
+}
+
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

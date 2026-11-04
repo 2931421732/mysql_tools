@@ -47,12 +47,12 @@ Why Go:
 
 ## Features
 
-- **Connection management**: groups, colors, notes, SSL mode, timeouts, SSH tunnels (password / private key / ssh-agent), test connection.
+- **Connection management**: groups, colors, notes, SSL mode, timeouts, SSH tunnels (password / private key / ssh-agent), test connection, multi-select with select-all and bulk delete.
 - **Object tree**: databases, tables, views, row counts and sizes, search, lazy loading, right-click export and quick backup.
 - **SQL workbench**: multiple tabs, syntax highlighting, table/column autocomplete, `⌘↩` to run, `⇧⌘↩` to run the selection, EXPLAIN, stop (`KILL QUERY` without dropping the session), multiple statements and result sets, query history.
 - **Data browsing**: pagination, a **WHERE** builder in the table toolbar (no top filter bar) with manually typed fields, AND/OR conditions (`IN` / `BETWEEN` / NULL) and sorting; drag a column header to add a condition. **Details** bottom pane for full long text/JSON, column `COMMENT` tooltips, and a timestamp display toggle that never changes the underlying value (edits still send the raw value). A one-line effective SQL summary can be copied directly. Generate INSERT/UPDATE/DELETE SQL from selected rows, primary-key-based safe editing, insert/delete rows, CSV and XLSX export.
 - **Database export**: right-click a database → choose structure only, structure + all data, or custom (all structure + data for selected tables).
-- **`.ncx` connection import/export**: `+` → **Import .ncx** parses XML/JSON connection exports, including Navicat's AES-128-CBC encrypted passwords. **Export** (sidebar, `.ncx`) lets you select connections and optionally include passwords encrypted the same way.
+- **`.ncx` connection import/export**: `+` → **Import .ncx** parses XML/JSON connection exports, including AES-128-CBC encrypted passwords. If a same-name/same-config connection exists, NavMini asks whether to overwrite; otherwise it creates a `<name>_copy` connection. **Export** (sidebar, `.ncx`) lets you select connections and optionally include passwords encrypted the same way.
 - **Excel import**: a guided wizard reads `.xlsx/.xlsm` sheets, lets you choose the header row, auto-matches Excel headers to table columns, supports manual mapping, and inserts in bounded multi-row batches inside one transaction. DATE/DATETIME/TIMESTAMP/TIME values are normalized.
 - **Saved queries**: name and save SQL snippets; they are stored per connection endpoint (`host:port`) and shown again for the same connection.
 - **Settings**: language (English default, 中文), dark/light theme, UI/editor font, editor font size, background image, default primary-key descending sort, and the DeepSeek configuration all live in one Settings dialog. Open it from the top toolbar, the sidebar, or macOS `NavMini → Settings…` (`⌘,`).

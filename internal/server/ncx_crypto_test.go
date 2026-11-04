@@ -1,6 +1,10 @@
 package server
 
-import "testing"
+import (
+	"testing"
+
+	"navmini/internal/config"
+)
 
 func TestNCXPasswordRoundTrip(t *testing.T) {
 	for _, plain := range []string{"secret", "p@ss word!", "中文密码", "1234567890123456"} {
@@ -32,5 +36,23 @@ func TestNCXRealShape(t *testing.T) {
 	}
 	if len(conns) != 1 || conns[0].Host != "db.example.com" || conns[0].User != "shop_app" || !conns[0].SSH.Enabled || conns[0].SSH.User != "deploy" {
 		t.Fatalf("conns = %#v", conns)
+	}
+}
+
+func TestNCXConflictAndCopyName(t *testing.T) {
+	base := config.Connection{Name: "A", Host: "h", Port: 3306, User: "u", Database: "d"}
+	other := base
+	other.ID = "id1"
+	if got, ok := ncxFindConflict(base, []config.Connection{other}); !ok || got.ID != "id1" {
+		t.Fatalf("expected conflict, got %#v %v", got, ok)
+	}
+	different := other
+	different.Port = 3307
+	if _, ok := ncxFindConflict(base, []config.Connection{different}); ok {
+		t.Fatal("different port must not conflict")
+	}
+	names := map[string]bool{"a_copy": true}
+	if got := ncxCopyName("A", names); got != "A_copy2" {
+		t.Fatalf("copy name = %q", got)
 	}
 }

@@ -742,3 +742,25 @@ func (s *Server) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
 		log.Printf("database export %s: %v", req.Database, err)
 	}
 }
+
+func (s *Server) handleDeleteConnections(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.IDs) == 0 {
+		fail(w, http.StatusBadRequest, errors.New("ids are required"))
+		return
+	}
+	if err := s.store.DeleteMany(req.IDs); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(req.IDs)})
+}

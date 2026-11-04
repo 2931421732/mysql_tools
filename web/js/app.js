@@ -14,6 +14,8 @@ const $ = (sel) => document.querySelector(sel);
 const S = {
   version: VERSION,
   connections: [],
+  multiSelect: false,
+  selectedConns: new Set(),
   settings: { theme: 'dark', language: 'en', pageSize: 200, maxRows: 1000, fontSize: 13, fontFamily: 'system', background: '', defaultSort: true },
   tabs: [],
   activeId: null,
@@ -64,6 +66,7 @@ async function init() {
 
 function bindStaticIcons() {
   $('#btn-new-connection').innerHTML = icon('plus');
+  $('#btn-multi-conn').innerHTML = icon('check');
   $('#btn-refresh-tree').innerHTML = icon('refresh');
   $('#btn-new-query').innerHTML = icon('plus');
   $('#btn-monitor').innerHTML = icon('activity');
@@ -76,6 +79,7 @@ function bindStaticIcons() {
 
 function bindChrome() {
   $('#btn-new-connection').addEventListener('click', () => openConnectionDialog());
+  $('#btn-multi-conn').addEventListener('click', () => toggleConnMultiSelect());
   $('#btn-refresh-tree').addEventListener('click', refreshTree);
   $('#btn-new-query').addEventListener('click', () => newQueryFromContext());
   $('#btn-monitor').addEventListener('click', () => openMonitor());
@@ -219,11 +223,71 @@ function refreshTree() {
 
 function matches(text, q) { return (text || '').toLowerCase().includes(q); }
 
+function toggleConnMultiSelect(force) {
+  S.multiSelect = typeof force === 'boolean' ? force : !S.multiSelect;
+  if (!S.multiSelect) S.selectedConns.clear();
+  document.querySelector('#btn-multi-conn')?.classList.toggle('primary', S.multiSelect);
+  renderTree();
+}
+
+function toggleConnSelection(id) {
+  if (!S.multiSelect) return;
+  if (S.selectedConns.has(id)) S.selectedConns.delete(id);
+  else S.selectedConns.add(id);
+  renderTree();
+}
+
+function buildConnBulkBar() {
+  const all = S.connections.length > 0 && S.connections.every((c) => S.selectedConns.has(c.id));
+  const allBox = h('input', { type: 'checkbox', checked: all });
+  allBox.addEventListener('change', () => {
+    S.selectedConns.clear();
+    if (allBox.checked) for (const c of S.connections) S.selectedConns.add(c.id);
+    renderTree();
+  });
+  const del = h('button', { class: 'btn sm danger', disabled: !S.selectedConns.size }, `删除${S.selectedConns.size ? ` (${S.selectedConns.size})` : ''}`);
+  del.addEventListener('click', deleteSelectedConnections);
+  return h('div', { class: 'conn-bulk' },
+    h('label', { class: 'check' }, allBox, h('span', {}, '全选')),
+    h('span', { class: 'faint' }, `${S.selectedConns.size} / ${S.connections.length}`),
+    h('span', { class: 'spacer' }),
+    del,
+    h('button', { class: 'btn sm', onClick: () => toggleConnMultiSelect(false) }, '退出'),
+  );
+}
+
+async function deleteSelectedConnections() {
+  const ids = [...S.selectedConns];
+  if (!ids.length) return;
+  const names = S.connections.filter((c) => ids.includes(c.id)).map((c) => c.name);
+  const ok = await confirmDialog({
+    title: '批量删除连接',
+    message: `确定删除选中的 <b>${ids.length}</b> 个连接？<br><span class="faint">${escapeHtml(names.join(', '))}</span><br>仅删除本地配置，不影响数据库。`,
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await apiPost('/api/connections/delete-bulk', { ids });
+    for (const id of ids) {
+      const cs = S.conns.get(id);
+      if (cs?.sessionId) apiPost('/api/session/close', { session: cs.sessionId }).catch(() => {});
+      S.conns.delete(id);
+    }
+    for (const t of [...S.tabs]) if (ids.includes(t.connId)) closeTab(t.id);
+    S.selectedConns.clear();
+    await reloadConnections();
+    renderTree();
+    toast(`已删除 ${ids.length} 个连接`, 'ok');
+  } catch (err) { toast(err.message, 'err', 6000); }
+}
+
 function renderTree() {
   const tree = $('#tree');
   const scrollTop = tree.scrollTop;
   tree.innerHTML = '';
   const q = S.search.toLowerCase();
+  if (S.multiSelect) tree.append(buildConnBulkBar());
   let shown = 0;
   for (const conn of S.connections) {
     const cs = connState(conn.id);
@@ -255,7 +319,14 @@ function renderConnNode(conn, cs, q, connHit) {
   const open = cs.expanded || (q && connHit);
   const caret = h('span', { class: 'node-caret' + (open ? ' open' : ''), html: icon('chevron-right') });
   const connected = !!(cs.connected || cs.sessionId);
-  const row = h('div', { class: 'node-row ' + (connected ? 'conn-on' : 'conn-off'), style: { '--depth': 0 }, title: `${conn.user}@${conn.host}:${conn.port}` },
+  const checked = S.selectedConns.has(conn.id);
+  const cb = S.multiSelect ? h('input', { type: 'checkbox', class: 'conn-check', checked }) : null;
+  if (cb) {
+    cb.addEventListener('click', (e) => e.stopPropagation());
+    cb.addEventListener('change', () => toggleConnSelection(conn.id));
+  }
+  const row = h('div', { class: 'node-row ' + (connected ? 'conn-on' : 'conn-off') + (checked ? ' conn-checked' : ''), style: { '--depth': 0 }, title: `${conn.user}@${conn.host}:${conn.port}` },
+    ...(cb ? [cb] : []),
     caret,
     h('span', { class: 'node-icon conn ' + (connected ? 'connected' : 'disconnected'), html: icon('database') }),
     h('span', { class: 'node-name' }, conn.name),
@@ -265,8 +336,11 @@ function renderConnNode(conn, cs, q, connHit) {
       h('button', { class: 'btn ghost sm icon', title: '编辑连接', html: icon('pencil'), onClick: (e) => { e.stopPropagation(); openConnectionDialog(conn); } }),
     ),
   );
-  row.addEventListener('click', () => toggleConn(conn.id));
-  row.addEventListener('dblclick', () => openQuery(conn.id, conn.database || '', ''));
+  row.addEventListener('click', () => {
+    if (S.multiSelect) toggleConnSelection(conn.id);
+    else toggleConn(conn.id);
+  });
+  row.addEventListener('dblclick', () => { if (!S.multiSelect) openQuery(conn.id, conn.database || '', ''); });
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
@@ -428,6 +502,8 @@ async function reloadConnections() {
   const state = await apiGet('/api/state');
   S.connections = state.connections || [];
   S.settings = Object.assign(S.settings, state.settings || {});
+  const ids = new Set(S.connections.map((c) => c.id));
+  for (const id of [...S.selectedConns]) if (!ids.has(id)) S.selectedConns.delete(id);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2382,23 +2458,51 @@ function openConnectionDialog(conn = null) {
   }
   const ncxInput = h('input', { type: 'file', accept: '.ncx', class: 'bg-file-input' });
   const ncxBtn = h('label', { class: 'btn', title: '从 .ncx 导入连接' }, '导入 .ncx', ncxInput);
+  const finishNCXImport = async (data) => {
+    const state = await apiGet('/api/state');
+    S.connections = state.connections || [];
+    renderTree();
+    const welcome = S.tabs.find((t) => t.kind === 'welcome');
+    if (welcome) renderWelcome(welcome);
+    m.close();
+    toast(`已导入 ${data.count || 0} 个连接` + (data.warnings?.length ? `；${data.warnings[0]}` : ''), data.warnings?.length ? 'warn' : 'ok', 6000);
+  };
+  const uploadNCX = async (file, confirmed = false, overwrite = false) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('confirmed', confirmed ? 'true' : 'false');
+    fd.append('overwrite', overwrite ? 'true' : 'false');
+    const res = await fetch('/api/connections/import-ncx', { method: 'POST', headers: { 'X-NavMini-Token': TOKEN }, body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.needsConfirm) {
+      const overwriteBox = h('input', { type: 'checkbox' });
+      const body = h('div', {},
+        h('p', { class: 'modal-msg' }, '检测到名称和连接配置均相同的连接：'),
+        h('ul', { class: 'conflict-list' }, ...(data.conflicts || []).map((n) => h('li', {}, n))),
+        h('label', { class: 'check' }, overwriteBox, h('span', {}, '覆盖更新同名同配置连接')),
+        h('p', { class: 'hint' }, '不勾选则新增一个名为 _copy 的连接。'));
+      const dm = openModal({ title: '连接已存在', body, wide: true });
+      const cancelImport = h('button', { class: 'btn', onClick: () => dm.close() }, '取消');
+      const go = h('button', { class: 'btn primary' }, '继续导入');
+      go.addEventListener('click', async () => {
+        go.disabled = true;
+        try {
+          dm.close();
+          await uploadNCX(file, true, overwriteBox.checked);
+        } catch (err) { toast(err.message, 'err', 7000); }
+        finally { go.disabled = false; }
+      });
+      dm.footer.append(h('span', { class: 'spacer' }), cancelImport, go);
+      return;
+    }
+    await finishNCXImport(data);
+  };
   ncxInput.addEventListener('change', async () => {
     const file = ncxInput.files && ncxInput.files[0];
     if (!file) return;
-    const fd = new FormData();
-    fd.append('file', file);
-    try {
-      const res = await fetch('/api/connections/import-ncx', { method: 'POST', headers: { 'X-NavMini-Token': TOKEN }, body: fd });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const state = await apiGet('/api/state');
-      S.connections = state.connections || [];
-      renderTree();
-      const welcome = S.tabs.find((t) => t.kind === 'welcome');
-      if (welcome) renderWelcome(welcome);
-      m.close();
-      toast(`已导入 ${data.count || 0} 个连接` + (data.warnings?.length ? `；${data.warnings[0]}` : ''), data.warnings?.length ? 'warn' : 'ok', 6000);
-    } catch (err) { toast(err.message, 'err', 8000); }
+    try { await uploadNCX(file); }
+    catch (err) { toast(err.message, 'err', 8000); }
     finally { ncxInput.value = ''; }
   });
   m.footer.append(h('span', { class: 'spacer' }), ncxBtn, testBtn, cancel, save);

@@ -53,6 +53,7 @@ func (s *Server) handleImportNCX(w http.ResponseWriter, r *http.Request) {
 	}
 	imported := make([]string, 0, len(conns))
 	warnings := []string{}
+	decrypted := make([]config.Connection, 0, len(conns))
 	for _, c := range conns {
 		if c.Password != "" {
 			pw, err := decryptNCXPassword(c.Password)
@@ -72,14 +73,87 @@ func (s *Server) handleImportNCX(w http.ResponseWriter, r *http.Request) {
 				c.SSH.Password = pw
 			}
 		}
+		decrypted = append(decrypted, c)
+	}
+	confirmed := strings.EqualFold(r.FormValue("confirmed"), "true")
+	overwrite := strings.EqualFold(r.FormValue("overwrite"), "true")
+	existing := s.store.Connections()
+	conflicts := make([]string, 0)
+	conflictByIndex := make(map[int]config.Connection)
+	for i, c := range decrypted {
+		if old, ok := ncxFindConflict(c, existing); ok {
+			conflicts = append(conflicts, c.Name)
+			conflictByIndex[i] = old
+		}
+	}
+	if len(conflicts) > 0 && !confirmed {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"needsConfirm": true, "conflicts": conflicts,
+			"warnings": warnings, "count": 0,
+		})
+		return
+	}
+	names := make(map[string]bool, len(existing)+len(decrypted))
+	for _, c := range existing {
+		names[strings.ToLower(c.Name)] = true
+	}
+	for i, c := range decrypted {
+		if old, ok := conflictByIndex[i]; ok {
+			if overwrite {
+				c.ID = old.ID
+			} else {
+				c.Name = ncxCopyName(c.Name, names)
+			}
+		}
 		out, err := s.store.Upsert(c)
 		if err != nil {
 			warnings = append(warnings, c.Name+": "+err.Error())
 			continue
 		}
+		names[strings.ToLower(out.Name)] = true
 		imported = append(imported, out.Name)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "warnings": warnings, "count": len(imported)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"imported": imported, "warnings": warnings, "count": len(imported),
+		"overwritten": overwrite && len(conflicts) > 0,
+	})
+}
+
+func ncxFindConflict(c config.Connection, existing []config.Connection) (config.Connection, bool) {
+	for _, e := range existing {
+		if !strings.EqualFold(strings.TrimSpace(c.Name), strings.TrimSpace(e.Name)) {
+			continue
+		}
+		if c.Host != e.Host || c.Port != e.Port || c.User != e.User || c.Database != e.Database {
+			continue
+		}
+		if c.SSH.Enabled != e.SSH.Enabled {
+			continue
+		}
+		if c.SSH.Enabled && (c.SSH.Host != e.SSH.Host || c.SSH.User != e.SSH.User || c.SSH.Port != e.SSH.Port) {
+			continue
+		}
+		return e, true
+	}
+	return config.Connection{}, false
+}
+
+func ncxCopyName(base string, names map[string]bool) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "connection"
+	}
+	candidate := base + "_copy"
+	if !names[strings.ToLower(candidate)] {
+		return candidate
+	}
+	for i := 2; i < 10000; i++ {
+		candidate = fmt.Sprintf("%s_copy%d", base, i)
+		if !names[strings.ToLower(candidate)] {
+			return candidate
+		}
+	}
+	return base + "_copy_new"
 }
 
 func ncxInnerXML(data []byte) []byte {
