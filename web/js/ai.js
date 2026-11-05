@@ -41,11 +41,11 @@ export function closeAssistant() {
 function buildPanel(ctx) {
   const panel = h('div', { class: 'ai-panel' });
   const modeBadge = h('span', { class: 'ai-mode' }, '只读');
-  const settingsBtn = h('button', { class: 'btn ghost sm icon', title: 'DeepSeek 设置', html: icon('settings') });
+  const settingsBtn = h('button', { class: 'btn ghost sm icon', title: 'AI 设置', html: icon('settings') });
   const closeBtn = h('button', { class: 'btn ghost sm icon', title: '关闭', html: icon('x') });
   const head = h('div', { class: 'ai-head' },
     h('span', { class: 'ai-logo', html: icon('sparkles') }),
-    h('div', { class: 'ai-title' }, 'DeepSeek 助手', h('span', { class: 'ai-sub' }, 'SQL / 日志分析 · 执行前确认')),
+    h('div', { class: 'ai-title' }, 'AI 助手', h('span', { class: 'ai-sub' }, 'SQL / 日志分析 · 执行前确认')),
     modeBadge,
     settingsBtn, closeBtn,
   );
@@ -57,7 +57,7 @@ function buildPanel(ctx) {
   const input = h('textarea', { class: 'ai-input', placeholder: '描述你想查或改什么，例如：按国家统计客户数与余额，按余额倒序', spellcheck: 'false' });
   const attachInput = h('input', {
     type: 'file', class: 'ai-file-input',
-    accept: '.xlsx,.xlsm,.csv,.tsv,.txt,.sql,.md,.markdown,.json,.log,.out,.err,.trace,.yaml,.yml,.toml,.ini,.conf,.properties,.xml,.html,.css,.go,.py,.js,.ts,.jsx,.tsx,.java,.kt,.c,.h,.cpp,.hpp,.cc,.cs,.php,.rb,.rs,.swift,.sh,.vue,.svelte',
+    accept: '.xlsx,.xlsm,.csv,.tsv,.txt,.sql,.md,.markdown,.json,.log,.out,.err,.trace,.yaml,.yml,.toml,.ini,.conf,.properties,.xml,.html,.css,.go,.py,.js,.ts,.jsx,.tsx,.java,.kt,.c,.h,.cpp,.hpp,.cc,.cs,.php,.rb,.rs,.swift,.sh,.vue,.svelte,.zip,.tar,.tar.gz,.tgz',
   });
   const attachBtn = h('label', { class: 'btn ghost sm icon ai-attach', title: 'Attach file', html: icon('paperclip') }, attachInput);
   const attachmentsBox = h('div', { class: 'ai-attachments hidden' });
@@ -65,7 +65,7 @@ function buildPanel(ctx) {
   const composer = h('div', { class: 'ai-compose' }, rowCtx, attachmentsBox, input,
     h('div', { class: 'ai-compose-bar' },
       attachBtn,
-      h('span', { class: 'faint ai-attach-hint' }, 'xlsx / csv / 日志 / 源代码'),
+      h('span', { class: 'faint ai-attach-hint' }, 'xlsx / csv / 日志 / 源代码 / 压缩包'),
       h('span', { class: 'flex-1' }), h('span', { class: 'faint' }, '⌘↩ 发送'), sendBtn));
   panel.append(head, notice, scopeBox, messages, composer);
   panel._ui = { modeBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn, attachInput, attachBtn, attachmentsBox };
@@ -138,8 +138,8 @@ async function bootstrap() {
   renderScope();
   renderMessages();
   await ensureSession();
-  if (!live.state?.hasKey) showNotice('尚未配置 DeepSeek API Key。配置后即可生成 SQL。', true);
-  else if (!live.state?.enabled) showNotice('DeepSeek 助手未启用，请到设置里开启。', true);
+  if (!live.state?.hasKey) showNotice('尚未配置 AI API Key。配置后即可使用。', true);
+  else if (!live.state?.enabled) showNotice('AI 助手未启用，请到设置里开启。', true);
 }
 
 async function ensureSession() {
@@ -318,7 +318,7 @@ async function sendMessage() {
   const input = live.panel._ui.input;
   const text = input.value.trim();
   if (!text) return;
-  if (!live.state?.enabled || !live.state?.hasKey) { toast('请先配置并启用 DeepSeek', 'warn', 3000); return; }
+  if (!live.state?.enabled || !live.state?.hasKey) { toast('请先配置并启用 AI 助手', 'warn', 3000); return; }
   if (!live.selectedDbs.size && !(live.attachments || []).length) {
     toast('请选择数据库，或先上传日志/源代码附件', 'warn', 3500);
     return;
@@ -329,7 +329,7 @@ async function sendMessage() {
   live.history.push({ role: 'user', content: text });
   input.value = '';
   renderMessages();
-  const loading = h('div', { class: 'ai-bubble assistant loading' }, h('span', { class: 'spinner' }), h('span', {}, 'DeepSeek 思考中…'));
+  const loading = h('div', { class: 'ai-bubble assistant loading' }, h('span', { class: 'spinner' }), h('span', {}, 'AI 思考中…'));
   live.panel._ui.messages.append(loading);
   live.panel._ui.messages.scrollTop = 1e9;
   try {
@@ -487,7 +487,7 @@ function openAISettings() {
     h('p', { class: 'faint', style: { fontSize: '11.5px', lineHeight: '1.7' } }, '权限在服务端强制校验；写操作仍需在弹窗中确认。'),
     result,
   );
-  const m = openModal({ title: 'DeepSeek 设置', subtitle: 'API / 权限', body: form, wide: true });
+  const m = openModal({ title: 'AI 设置', subtitle: 'API / 权限', body: form, wide: true });
   const test = h('button', { class: 'btn' }, '测试连接');
   test.addEventListener('click', async () => {
     test.disabled = true;
@@ -524,9 +524,9 @@ function openAISettings() {
         live.panel._ui.modeBadge.dataset.mode = out.permission;
         panelClass(out);
         if (out.hasKey && out.enabled) live.panel._ui.notice.classList.add('hidden');
-        else showNotice(!out.hasKey ? '尚未配置 DeepSeek API Key。' : 'DeepSeek 助手未启用。', true);
+        else showNotice(!out.hasKey ? '尚未配置 DeepSeek API Key。' : 'AI 助手未启用。', true);
       }
-      toast('DeepSeek 设置已保存', 'ok');
+      toast('AI 设置已保存', 'ok');
       m.close();
     } catch (err) {
       toast(err.message, 'err', 6000);
@@ -544,8 +544,8 @@ document.addEventListener('navmini:ai-config', async () => {
   if (live.state?.enabled && live.state?.hasKey) {
     notice.classList.add('hidden');
   } else if (!live.state?.hasKey) {
-    showNotice('尚未配置 DeepSeek API Key。配置后即可生成 SQL。', true);
+    showNotice('尚未配置 AI API Key。配置后即可使用。', true);
   } else {
-    showNotice('DeepSeek 助手未启用，请到设置里开启。', true);
+    showNotice('AI 助手未启用，请到设置里开启。', true);
   }
 });

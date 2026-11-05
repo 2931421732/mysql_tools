@@ -75,9 +75,13 @@ NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / 
 - **快速备份**：右键表 → `CREATE TABLE … LIKE` + `INSERT … SELECT`，当前库留存结构与数据。
 - **服务器监控**：连接数、QPS、运行时间、慢查询、缓冲池命中、流量、进程列表与终止连接、状态变量。
 
-### DeepSeek 助手
+### AI 助手
 
-- 在 **设置 → DeepSeek** 里配置 **Base URL / API Key**；模型下拉框从服务端 `/models` 获取，
+- 支持三种 Provider：**DeepSeek**（OpenAI 兼容）、**Claude Code**（Anthropic Messages）、
+  **Codex**（OpenAI Responses）。
+- 选择「引用本地配置」可只读引用 Claude Code（`~/.claude/settings.json`）或
+  Codex（`~/.codex/config.toml` + `auth.json`），不会修改原文件，密钥不回传浏览器。
+- 手动模式可配置 Base URL / API Key；模型下拉框从服务端 `/models` 获取，
   可点「刷新模型」更新；
   API Key 用 AES-256-GCM 存在服务端，前端只看到“已配置”。
 - **权限模式**：`只读`（SELECT/SHOW/EXPLAIN）、`可修改`（+INSERT/UPDATE/REPLACE）、
@@ -89,7 +93,7 @@ NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / 
 - **多库**：面板可多选数据库，SQL 要求 `db.table` 限定；执行会话不预设默认库。
 - **值驱动**：可右键表格行“让 AI 修改此行”附带选中行；模型最多可发起 2 条只读探测
   （服务端强制 LIMIT 50），再生成最终 SQL。
-- **附件**：回形针可附加表格、服务日志和源代码（`.log/.out/.err/.trace/.go/.py/.js/.ts/.java/.c/.cpp/.cs/.php/.rb/.rs/.swift/.sql/.yaml/.xml` 等，
+- **附件**：回形针可附加表格、服务日志、源代码和 `.zip/.tar/.tar.gz/.tgz` 压缩包（`.log/.out/.err/.trace/.go/.py/.js/.ts/.java/.c/.cpp/.cs/.php/.rb/.rs/.swift/.sql/.yaml/.xml` 等，
   最大 20 MB，最多 3 个）。表格附件可交给当前表导入；日志保留头尾，源代码保留有界片段。
   不选数据库也可以直接分析附件。附件会发送到你配置的 DeepSeek 端点，
   敏感数据请谨慎附加。

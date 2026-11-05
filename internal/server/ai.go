@@ -16,13 +16,7 @@ import (
 )
 
 func (s *Server) handleAIState(w http.ResponseWriter, r *http.Request) {
-	cfg := s.store.GetAI()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": cfg.Enabled, "baseURL": cfg.BaseURL, "model": cfg.Model,
-		"permission": cfg.Permission, "databases": cfg.Databases,
-		"autoExplain": cfg.AutoExplain, "hasKey": cfg.HasKey,
-		"models": []string{"deepseek-chat", "deepseek-reasoner"},
-	})
+	writeJSON(w, http.StatusOK, s.aiStatePayload())
 }
 
 func validAIBaseURL(raw string) error {
@@ -42,6 +36,9 @@ func (s *Server) handleAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Enabled     bool     `json:"enabled"`
+		Provider    string   `json:"provider"`
+		Source      string   `json:"source"`
+		LocalPath   string   `json:"localPath"`
 		BaseURL     string   `json:"baseURL"`
 		Model       string   `json:"model"`
 		Permission  string   `json:"permission"`
@@ -62,19 +59,15 @@ func (s *Server) handleAIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := config.AIConfig{
-		Enabled: req.Enabled, BaseURL: base, Model: req.Model, Permission: req.Permission,
+		Enabled: req.Enabled, Provider: req.Provider, Source: req.Source, LocalPath: req.LocalPath,
+		BaseURL: base, Model: req.Model, Permission: req.Permission,
 		Databases: req.Databases, AutoExplain: req.AutoExplain,
 	}
 	if err := s.store.SaveAI(cfg, req.APIKey); err != nil {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	out := s.store.GetAI()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": out.Enabled, "baseURL": out.BaseURL, "model": out.Model,
-		"permission": out.Permission, "databases": out.Databases,
-		"autoExplain": out.AutoExplain, "hasKey": out.HasKey,
-	})
+	writeJSON(w, http.StatusOK, s.aiStatePayload())
 }
 
 func (s *Server) handleAITest(w http.ResponseWriter, r *http.Request) {
@@ -82,36 +75,42 @@ func (s *Server) handleAITest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		BaseURL string `json:"baseURL"`
-		Model   string `json:"model"`
-		APIKey  string `json:"apiKey"`
+		Provider  string `json:"provider"`
+		Source    string `json:"source"`
+		LocalPath string `json:"localPath"`
+		BaseURL   string `json:"baseURL"`
+		Model     string `json:"model"`
+		APIKey    string `json:"apiKey"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
 	cfg := s.store.GetAI()
-	base := strings.TrimSpace(req.BaseURL)
-	if base == "" {
-		base = cfg.BaseURL
+	source := strings.ToLower(strings.TrimSpace(req.Source))
+	if source == "" {
+		source = cfg.Source
 	}
-	if err := validAIBaseURL(base); err != nil {
+	key := strings.TrimSpace(req.APIKey)
+	if key == "" && source != "local" {
+		key = s.store.AIKey()
+	}
+	profile, err := profileFromRequest(cfg, req.BaseURL, req.Model, key, req.Provider, source, req.LocalPath)
+	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	key := strings.TrimSpace(req.APIKey)
-	if key == "" {
-		key = s.store.AIKey()
+	if source != "local" {
+		if err := validAIBaseURL(profile.BaseURL); err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return
+		}
 	}
-	if key == "" {
+	if profile.APIKey == "" {
 		fail(w, http.StatusBadRequest, fmt.Errorf("请先填写 API Key"))
 		return
 	}
-	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		model = cfg.Model
-	}
-	client := ai.NewClient(base, key, model)
+	client := ai.NewProviderClient(profile)
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -124,7 +123,8 @@ func (s *Server) handleAITest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "model": model, "latency": time.Since(started).Milliseconds(),
+		"ok": true, "model": profile.Model, "provider": profile.Provider,
+		"protocol": profile.Protocol, "latency": time.Since(started).Milliseconds(),
 		"usage": usage, "reply": content,
 	})
 }
@@ -158,12 +158,16 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.store.GetAI()
 	if !cfg.Enabled {
-		fail(w, http.StatusBadRequest, fmt.Errorf("DeepSeek 助手未启用"))
+		fail(w, http.StatusBadRequest, fmt.Errorf("AI 助手未启用"))
 		return
 	}
-	key := s.store.AIKey()
-	if key == "" {
-		fail(w, http.StatusBadRequest, fmt.Errorf("尚未配置 DeepSeek API Key"))
+	profile, err := s.resolveAIProfile()
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if profile.APIKey == "" {
+		fail(w, http.StatusBadRequest, fmt.Errorf("尚未配置 API Key"))
 		return
 	}
 	if len(req.Messages) == 0 {
@@ -221,7 +225,7 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	messages := []ai.Message{{Role: "system", Content: system}}
 	messages = append(messages, ai.HistoryMessages(req.Messages)...)
-	client := ai.NewClient(cfg.BaseURL, key, cfg.Model)
+	client := ai.NewProviderClient(profile)
 	ctx, cancel := context.WithTimeout(r.Context(), 100*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -258,6 +262,7 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		"risk": reply.Risk, "notes": reply.Notes, "blocked": reply.Blocked,
 		"blockReason": reply.BlockReason, "warnings": reply.Warnings, "plan": reply.Plan,
 		"usage": usage, "duration": time.Since(started).Milliseconds(),
+		"provider": profile.Provider, "protocol": profile.Protocol,
 		"schemaTables": schemaTables, "schemaTruncated": schemaTruncated,
 	})
 }
@@ -406,7 +411,7 @@ func (s *Server) handleAIExecute(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.store.GetAI()
 	if !cfg.Enabled {
-		fail(w, http.StatusForbidden, fmt.Errorf("DeepSeek 助手未启用"))
+		fail(w, http.StatusForbidden, fmt.Errorf("AI 助手未启用"))
 		return
 	}
 	kind, reason := ai.Classify(req.SQL)
@@ -445,31 +450,42 @@ func (s *Server) handleAIModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		BaseURL string `json:"baseURL"`
-		APIKey  string `json:"apiKey"`
+		Provider  string `json:"provider"`
+		Source    string `json:"source"`
+		LocalPath string `json:"localPath"`
+		BaseURL   string `json:"baseURL"`
+		Model     string `json:"model"`
+		APIKey    string `json:"apiKey"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
 	cfg := s.store.GetAI()
-	base := strings.TrimSpace(req.BaseURL)
-	if base == "" {
-		base = cfg.BaseURL
+	source := strings.ToLower(strings.TrimSpace(req.Source))
+	if source == "" {
+		source = cfg.Source
 	}
-	if err := validAIBaseURL(base); err != nil {
+	key := strings.TrimSpace(req.APIKey)
+	if key == "" && source != "local" {
+		key = s.store.AIKey()
+	}
+	profile, err := profileFromRequest(cfg, req.BaseURL, req.Model, key, req.Provider, source, req.LocalPath)
+	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	key := strings.TrimSpace(req.APIKey)
-	if key == "" {
-		key = s.store.AIKey()
+	if source != "local" {
+		if err := validAIBaseURL(profile.BaseURL); err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return
+		}
 	}
-	if key == "" {
+	if profile.APIKey == "" {
 		fail(w, http.StatusBadRequest, fmt.Errorf("请先填写 API Key"))
 		return
 	}
-	client := ai.NewClient(base, key, "")
+	client := ai.NewProviderClient(profile)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	models, err := client.ListModels(ctx)
@@ -478,4 +494,28 @@ func (s *Server) handleAIModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+func (s *Server) handleAIDetect(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	var req struct {
+		Provider  string `json:"provider"`
+		LocalPath string `json:"localPath"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	profile, err := ai.DetectLocal(req.Provider, req.LocalPath)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "provider": profile.Provider, "protocol": profile.Protocol,
+		"baseURL": profile.BaseURL, "model": profile.Model, "configPath": profile.ConfigPath,
+		"hasKey": profile.APIKey != "", "authStyle": profile.AuthStyle,
+	})
 }

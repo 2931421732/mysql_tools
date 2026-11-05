@@ -109,6 +109,9 @@ type SavedQuery struct {
 // AIConfig is the public (secret-free) DeepSeek configuration.
 type AIConfig struct {
 	Enabled     bool     `json:"enabled"`
+	Provider    string   `json:"provider"` // deepseek | claude-code | codex
+	Source      string   `json:"source"`   // manual | local
+	LocalPath   string   `json:"localPath"`
 	BaseURL     string   `json:"baseURL"`
 	Model       string   `json:"model"`
 	Permission  string   `json:"permission"` // readonly | modify | delete
@@ -119,6 +122,8 @@ type AIConfig struct {
 
 func DefaultAIConfig() AIConfig {
 	return AIConfig{
+		Provider:    "deepseek",
+		Source:      "manual",
 		BaseURL:     "https://api.deepseek.com",
 		Model:       "deepseek-chat",
 		Permission:  "readonly",
@@ -630,6 +635,16 @@ func (s *Store) SaveAI(in AIConfig, apiKey string) error {
 	if model == "" {
 		model = "deepseek-chat"
 	}
+	provider := strings.ToLower(strings.TrimSpace(in.Provider))
+	switch provider {
+	case "claude-code", "codex", "deepseek":
+	default:
+		provider = "deepseek"
+	}
+	source := strings.ToLower(strings.TrimSpace(in.Source))
+	if source != "local" {
+		source = "manual"
+	}
 	perm := strings.ToLower(strings.TrimSpace(in.Permission))
 	switch perm {
 	case "readonly", "modify", "delete":
@@ -649,7 +664,8 @@ func (s *Store) SaveAI(in AIConfig, apiKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ai = AIConfig{
-		Enabled: in.Enabled, BaseURL: base, Model: model, Permission: perm,
+		Enabled: in.Enabled, Provider: provider, Source: source, LocalPath: strings.TrimSpace(in.LocalPath),
+		BaseURL: base, Model: model, Permission: perm,
 		Databases: dbs, AutoExplain: in.AutoExplain,
 	}
 	if strings.TrimSpace(apiKey) != "" {
@@ -691,6 +707,12 @@ func (s *Store) loadAI() error {
 		return nil
 	}
 	s.ai = sc.AIConfig
+	if s.ai.Provider == "" {
+		s.ai.Provider = "deepseek"
+	}
+	if s.ai.Source == "" {
+		s.ai.Source = "manual"
+	}
 	if s.ai.BaseURL == "" {
 		s.ai.BaseURL = "https://api.deepseek.com"
 	}

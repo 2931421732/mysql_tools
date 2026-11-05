@@ -52,6 +52,25 @@ func (s *Server) handleAIAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	ext := strings.ToLower(filepath.Ext(hdr.Filename))
 	info := aiAttachment{Name: hdr.Filename, Size: int64(len(data))}
+	if isArchiveName(hdr.Filename) {
+		summary, err := archiveAttachmentText(data, hdr.Filename)
+		if err != nil {
+			fail(w, http.StatusBadRequest, err)
+			return
+		}
+		id, err := s.imports.putExt([]byte(summary), hdr.Filename+".txt", ".txt")
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		text := summary
+		if len(text) > 6000 {
+			text = text[:6000] + "\n…"
+		}
+		info.ID, info.Kind, info.Text = id, "text", text
+		writeJSON(w, http.StatusOK, info)
+		return
+	}
 	switch ext {
 	case ".xlsx", ".xlsm":
 		id, err := s.imports.putExt(data, hdr.Filename, ".xlsx")

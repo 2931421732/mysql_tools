@@ -2662,6 +2662,18 @@ async function openSettings(section = 'general') {
 
   const aiEnabled = h('input', { type: 'checkbox' });
   aiEnabled.checked = !!ai.enabled;
+  const aiProvider = h('select', { class: 'input' },
+    h('option', { value: 'deepseek' }, 'DeepSeek'),
+    h('option', { value: 'claude-code' }, 'Claude Code'),
+    h('option', { value: 'codex' }, 'Codex'));
+  aiProvider.value = ai.provider || 'deepseek';
+  const aiSource = h('select', { class: 'input' },
+    h('option', { value: 'manual' }, '手动配置'),
+    h('option', { value: 'local' }, '引用本地配置'));
+  aiSource.value = ai.source === 'local' ? 'local' : 'manual';
+  const aiLocalPath = h('input', { class: 'input', value: ai.localPath || '', placeholder: '项目目录或配置文件；留空使用全局默认路径' });
+  const aiLocalStatus = h('span', { class: 'hint' }, ai.localError || '');
+  const aiDetect = h('button', { class: 'btn sm', type: 'button' }, '检测本地配置');
   const aiBase = h('input', { class: 'input', value: ai.baseURL || 'https://api.deepseek.com' });
   const aiKey = h('input', { class: 'input', type: 'password', placeholder: ai.hasKey ? '已保存，留空保持不变' : 'sk-…' });
   const aiModel = h('select', { class: 'input' });
@@ -2682,13 +2694,51 @@ async function openSettings(section = 'general') {
     aiModelRefresh.disabled = true;
     aiModelStatus.textContent = '正在获取服务端模型…';
     try {
-      const res = await apiPost('/api/ai/models', { baseURL: aiBase.value.trim(), apiKey: aiKey.value });
+      const res = await apiPost('/api/ai/models', {
+        provider: aiProvider.value, source: aiSource.value, localPath: aiLocalPath.value.trim(),
+        baseURL: aiBase.value.trim(), model: aiModel.value, apiKey: aiKey.value,
+      });
       setAIModels(res.models || [], `已获取 ${res.models?.length || 0} 个模型`);
     } catch (err) {
       setAIModels([], err.message);
-    } finally { aiModelRefresh.disabled = false; }
+    } finally { aiModelRefresh.disabled = aiSource.value === 'local'; }
   };
-  setAIModels([]);
+  const detectAI = async () => {
+    if (aiSource.value !== 'local') return;
+    aiLocalStatus.textContent = '正在检测本地配置…';
+    try {
+      const res = await apiPost('/api/ai/detect', { provider: aiProvider.value, localPath: aiLocalPath.value.trim() });
+      aiLocalStatus.textContent = `${res.protocol} · ${res.baseURL} · ${res.model} · ${res.hasKey ? '已找到密钥' : '未找到密钥'}`;
+      aiLocalStatus.title = res.configPath || '';
+      aiBase.value = res.baseURL || aiBase.value;
+      aiModel.innerHTML = '';
+      aiModel.append(h('option', { value: res.model }, res.model));
+      aiModel.value = res.model;
+      aiModelStatus.textContent = `本地配置：${res.configPath || ''}`;
+    } catch (err) {
+      aiLocalStatus.textContent = err.message;
+    }
+  };
+  const syncProviderMode = () => {
+    const local = aiSource.value === 'local';
+    aiLocalPath.disabled = !local;
+    aiDetect.disabled = !local;
+    for (const el of [aiBase, aiKey, aiModel, aiModelRefresh]) el.disabled = local;
+    if (local) {
+      aiLocalStatus.textContent = '使用 Claude Code / Codex 本地配置，不写入原文件。';
+      detectAI();
+    } else {
+      aiLocalStatus.textContent = '';
+      if (!modelsLoaded) loadAIModels();
+    }
+  };
+  aiProvider.addEventListener('change', () => { modelsLoaded = false; syncProviderMode(); });
+  aiSource.addEventListener('change', () => { modelsLoaded = false; syncProviderMode(); });
+  aiLocalPath.addEventListener('change', detectAI);
+  aiDetect.addEventListener('click', detectAI);
+  aiModelRefresh.addEventListener('click', loadAIModels);
+  aiBase.addEventListener('change', () => { if (aiSource.value === 'manual') loadAIModels(); });
+  aiKey.addEventListener('change', () => { if (aiSource.value === 'manual') loadAIModels(); });
   const aiPermission = h('select', { class: 'input' },
     h('option', { value: 'readonly' }, '只读（只能 SELECT / SHOW / EXPLAIN）'),
     h('option', { value: 'modify' }, '可修改（允许 INSERT / UPDATE / REPLACE）'),
@@ -2702,25 +2752,31 @@ async function openSettings(section = 'general') {
     const old = aiTest.textContent;
     aiTest.textContent = '测试中…';
     try {
-      await apiPost('/api/ai/test', { baseURL: aiBase.value.trim(), model: aiModel.value.trim(), apiKey: aiKey.value });
-      toast('连接成功', 'ok');
+      const res = await apiPost('/api/ai/test', {
+        provider: aiProvider.value, source: aiSource.value, localPath: aiLocalPath.value.trim(),
+        baseURL: aiBase.value.trim(), model: aiModel.value.trim(), apiKey: aiKey.value,
+      });
+      toast(`连接成功 · ${res.protocol} · ${res.model}`, 'ok');
     } catch (err) { toast(err.message, 'err', 7000); }
     finally { aiTest.disabled = false; aiTest.textContent = old; }
   });
   const aiForm = h('div', { class: 'form-grid' },
     h('div', { class: 'field wide' }, h('label', { class: 'check' }, aiEnabled, h('span', {}, '启用助手'))),
-    field('Base URL', aiBase, 'OpenAI-compatible endpoint'),
+    field('Provider', aiProvider),
+    field('配置来源', aiSource),
+    h('div', { class: 'field wide' }, h('label', {}, '本地配置目录/文件'), h('div', { class: 'row gap-8' }, aiLocalPath, aiDetect), aiLocalStatus),
+    field('Base URL', aiBase, '手动配置时使用；本地配置会自动读取'),
     h('div', { class: 'field' }, h('label', {}, '模型'), h('div', { class: 'ai-model-row' }, aiModel, aiModelRefresh), aiModelStatus),
-    field('API Key', aiKey, '仅保存在服务端，使用 AES-256-GCM 加密；不会回传到浏览器。'),
+    field('API Key', aiKey, '仅保存在服务端；本地配置模式不读取此字段'),
     field('权限模式', aiPermission, '权限在服务端强制校验；写操作仍需在弹窗中确认。'),
     h('div', { class: 'field wide' }, h('label', { class: 'check' }, aiExplain, h('span', {}, '生成后自动 EXPLAIN，提示全表扫描'))),
     h('div', { class: 'field wide' }, h('div', { class: 'row gap-8' }, aiTest)),
   );
-
+  setAIModels([]);
   const content = h('div');
   const tabBar = h('div', { class: 'settings-tabs' });
   const generalBtn = h('button', { class: 'btn sm' }, '通用');
-  const aiBtn = h('button', { class: 'btn sm' }, 'DeepSeek');
+  const aiBtn = h('button', { class: 'btn sm' }, 'AI 服务');
   const render = () => {
     content.innerHTML = '';
     content.append(active === 'ai' ? aiForm : general);
@@ -2732,12 +2788,9 @@ async function openSettings(section = 'general') {
   tabBar.append(generalBtn, aiBtn);
   content.append(general);
   const body = h('div', {}, tabBar, content);
-  const m = openModal({ title: '设置', subtitle: 'General · DeepSeek', body, wide: true });
+  const m = openModal({ title: '设置', subtitle: 'General · AI', body, wide: true });
   render();
-  aiModelRefresh.addEventListener('click', loadAIModels);
-  aiBase.addEventListener('change', loadAIModels);
-  aiKey.addEventListener('change', loadAIModels);
-  if (active === 'ai' || ai.hasKey) loadAIModels();
+  syncProviderMode();
 
   const save = h('button', { class: 'btn primary' }, '保存');
   const cancel = h('button', { class: 'btn' }, '取消');
@@ -2759,6 +2812,9 @@ async function openSettings(section = 'general') {
       await apiPost('/api/settings', S.settings);
       await apiPost('/api/ai/config', {
         enabled: aiEnabled.checked,
+        provider: aiProvider.value,
+        source: aiSource.value,
+        localPath: aiLocalPath.value.trim(),
         baseURL: aiBase.value.trim(),
         model: aiModel.value.trim(),
         permission: aiPermission.value,
