@@ -447,7 +447,7 @@ function renderTableNode(conn, db, obj) {
     h('span', { class: 'node-caret leaf' }),
     h('span', { class: 'node-icon ' + (isView ? 'view' : 'table'), html: icon(isView ? 'view' : 'table') }),
     h('span', { class: 'node-name' }, obj.name),
-    h('span', { class: 'node-meta' }, obj.rows ? formatNumber(obj.rows) : ''),
+    h('span', { class: 'node-meta' }, obj.engine || ''),
   );
   row.addEventListener('click', () => openTable(conn.id, db.name, obj.name));
   row.addEventListener('contextmenu', (e) => {
@@ -561,7 +561,7 @@ function renderTableDrawer() {
         list.append(h('button', { class: 'drawer-item' + (selected ? ' selected' : ''), onClick: () => openTable(state.connId, state.dbName, t.name) },
           h('span', { class: 'drawer-item-icon', html: icon('table') }),
           h('span', { class: 'drawer-item-name' }, t.name),
-          h('span', { class: 'drawer-item-meta' }, t.rows ? formatNumber(t.rows) : '')));
+          h('span', { class: 'drawer-item-meta' }, t.engine || '')));
       }
     }
     if (views.length) {
@@ -1376,7 +1376,7 @@ async function loadTableRows(tab) {
       offset: tab.page * tab.pageSize,
       orderBy: tab.order,
       filters: tab.filters,
-      count: tab.page === 0,
+      count: false, // COUNT(*) can scan a huge table; load data first, don't block the initial query
       defaultSort: !!S.settings.defaultSort && !(tab.order?.length) && !tab.sortCleared,
     };
     const res = await withTabSession(tab, (sid) => apiPost('/api/rows', { ...body, session: sid }));

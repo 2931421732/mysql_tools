@@ -130,26 +130,9 @@ func (s *Session) Databases(ctx context.Context) ([]Database, error) {
 		return nil, err
 	}
 
-	// Table counts and sizes per schema (cheap aggregate over information_schema).
-	srows, err := s.conn.QueryContext(ctx,
-		`SELECT TABLE_SCHEMA, COUNT(*), IFNULL(SUM(DATA_LENGTH+INDEX_LENGTH),0)
-		   FROM information_schema.TABLES GROUP BY TABLE_SCHEMA`)
-	if err == nil {
-		defer srows.Close()
-		stats := map[string][2]int64{}
-		for srows.Next() {
-			var name string
-			var cnt, size int64
-			if err := srows.Scan(&name, &cnt, &size); err == nil {
-				stats[name] = [2]int64{cnt, size}
-			}
-		}
-		for i := range out {
-			if v, ok := stats[out[i].Name]; ok {
-				out[i].Tables, out[i].SizeBytes = v[0], v[1]
-			}
-		}
-	}
+	// Table statistics are intentionally not aggregated here: on schemas with many
+	// tables the information_schema scan dominates connection/database opening.
+	// The table drawer loads a lightweight name/type list on demand instead.
 	return out, nil
 }
 
@@ -158,8 +141,7 @@ func (s *Session) Objects(ctx context.Context, db string) ([]Object, error) {
 	defer s.runMu.Unlock()
 
 	rows, err := s.conn.QueryContext(ctx,
-		`SELECT TABLE_NAME, TABLE_TYPE, IFNULL(ENGINE,''), IFNULL(TABLE_ROWS,0),
-		        IFNULL(DATA_LENGTH,0), IFNULL(INDEX_LENGTH,0), IFNULL(TABLE_COMMENT,''), IFNULL(UPDATE_TIME,'')
+		`SELECT TABLE_NAME, TABLE_TYPE, IFNULL(ENGINE,''), IFNULL(TABLE_COMMENT,'')
 		   FROM information_schema.TABLES WHERE TABLE_SCHEMA=?
 		  ORDER BY CASE TABLE_TYPE WHEN 'BASE TABLE' THEN 0 ELSE 1 END, TABLE_NAME`, db)
 	if err != nil {
@@ -169,7 +151,7 @@ func (s *Session) Objects(ctx context.Context, db string) ([]Object, error) {
 	var out []Object
 	for rows.Next() {
 		var o Object
-		if err := rows.Scan(&o.Name, &o.Type, &o.Engine, &o.Rows, &o.DataLength, &o.IndexLen, &o.Comment, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.Name, &o.Type, &o.Engine, &o.Comment); err != nil {
 			return nil, err
 		}
 		if o.Type == "VIEW" || o.Type == "SYSTEM VIEW" {

@@ -22,7 +22,7 @@ import (
 	"navmini/internal/server"
 )
 
-var version = "0.6.1"
+var version = "0.6.2"
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "listen address (host:port; port 0 picks a free port)")
