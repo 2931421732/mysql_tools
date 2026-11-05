@@ -354,7 +354,13 @@ func (s *Session) Run(ctx context.Context, queryID, database, text string, maxRo
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
+	// Close() can run while we wait for the serialization lock. Re-check before
+	// touching the now-closed DB handle.
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, errors.New("session is closed")
+	}
 	curDB := s.currentDB
 	s.mu.Unlock()
 	if database != "" && database != curDB {

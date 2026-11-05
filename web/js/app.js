@@ -574,7 +574,7 @@ function renderTableDrawer() {
       }
     }
   };
-  search.addEventListener('input', () => { state.query = search.value; paint(); });
+  search.addEventListener('input', debounce(() => { state.query = search.value; paint(); }, 90));
   search.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeTableDrawer(); });
   const searchBtn = h('button', { class: 'btn ghost sm icon', title: '搜索表', html: icon('search') });
   searchBtn.addEventListener('click', () => search.focus());

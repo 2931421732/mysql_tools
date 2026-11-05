@@ -93,10 +93,13 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			log.Printf("%s %s", r.Method, r.URL.Path)
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
 		}
+		started := time.Now()
 		next.ServeHTTP(w, r)
+		log.Printf("%s %s %dms", r.Method, r.URL.Path, time.Since(started).Milliseconds())
 	})
 }
 

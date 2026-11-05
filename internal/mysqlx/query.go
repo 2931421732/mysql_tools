@@ -255,7 +255,14 @@ func scanRows(rows *sql.Rows, maxRows int) ([]Column, [][]any, bool, error) {
 		ptrs[i] = &values[i]
 	}
 
-	data := make([][]any, 0, 64)
+	capacity := maxRows
+	if capacity > 1000 {
+		capacity = 1000
+	}
+	if capacity < 64 {
+		capacity = 64
+	}
+	data := make([][]any, 0, capacity)
 	truncated := false
 	for rows.Next() {
 		if len(data) >= maxRows {

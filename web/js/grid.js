@@ -161,18 +161,20 @@ export class Grid {
     const start = Math.max(0, Math.floor(scrollTop / ROW_H) - 4);
     const end = Math.min(total, Math.ceil((scrollTop + height) / ROW_H) + 4);
     let html = '';
+    const rowWidth = this.totalWidth();
     for (let r = start; r < end; r++) {
       const row = this.rows[r];
       const odd = r % 2 ? ' odd' : '';
       const sel = this.selected.row === r ? ' selected' : '';
-      html += `<div class="grid-row${odd}${sel}" data-row="${r}" style="transform:translateY(${r * ROW_H}px);width:${this.totalWidth()}px">`;
+      html += `<div class="grid-row${odd}${sel}" data-row="${r}" style="transform:translateY(${r * ROW_H}px);width:${rowWidth}px">`;
       html += `<div class="rowno">${r + 1}</div>`;
       for (let c = 0; c < this.columns.length; c++) {
         const col = this.columns[c];
         const value = row[c];
         const text = this.cellText(value, col);
         const raw = value === null || value === undefined ? 'NULL' : String(value);
-        const title = text !== this.cellText(value) && text.length > 0
+        const rawText = this.cellText(value);
+        const title = text !== rawText && text.length > 0
           ? `${text} · raw: ${raw.slice(0, 300)}`
           : (text.length > 40 ? text.slice(0, 400) : '');
         html += `<div class="${this.cellClasses(value, col, r, c)}" data-row="${r}" data-col="${c}" style="width:${this.widths[c]}px"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(text)}</div>`;

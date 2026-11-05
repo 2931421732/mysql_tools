@@ -1,6 +1,7 @@
 package mysqlx
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/csv"
@@ -298,7 +299,8 @@ func (s *Session) ExportTable(ctx context.Context, req RowsRequest, w io.Writer)
 	if err != nil {
 		return 0, err
 	}
-	cw := csv.NewWriter(w)
+	buf := bufio.NewWriterSize(w, 64*1024)
+	cw := csv.NewWriter(buf)
 	if err := cw.Write(header); err != nil {
 		return 0, err
 	}
@@ -329,7 +331,10 @@ func (s *Session) ExportTable(ctx context.Context, req RowsRequest, w io.Writer)
 		count++
 	}
 	cw.Flush()
-	return count, cw.Error()
+	if err := cw.Error(); err != nil {
+		return count, err
+	}
+	return count, buf.Flush()
 }
 
 func columnMap(cols []TableColumn) map[string]TableColumn {
