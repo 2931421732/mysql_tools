@@ -2,7 +2,12 @@
 // the default. Unknown strings fall back to Chinese so new UI never renders blank.
 const EN = {
   '连接': 'Connections', '新建连接': 'New Connection', '新建连接 (⌘N)': 'New Connection (⌘N)',
-  '搜索连接、库、表': 'Search connections, databases, tables', '刷新连接树': 'Refresh tree',
+  '搜索连接、库、表': 'Search connections, databases, tables', '搜索连接源': 'Search connections', '刷新连接树': 'Refresh tree',
+  '查数据': 'Query', '排障': 'Diagnose', '查看上下文与预算': 'View context & budget',
+  '上下文预算与预览': 'Context budget & preview', '分析错误、日志和源码': 'Diagnose errors, logs & source',
+  '让 AI 帮你写 SQL': 'Let AI write SQL', '系统提示 / Schema': 'System prompt / Schema',
+  '编辑器 SQL / 错误': 'Editor SQL / error', '附件 / 日志 / 源码': 'Attachments / logs / source',
+  '对话历史': 'Conversation history', '关闭': 'Close',
   '查询历史': 'Query History', '设置': 'Settings', '切换主题': 'Toggle theme',
   '新建查询': 'New Query', '新建查询 (⌘T)': 'New Query (⌘T)', 'DeepSeek 助手': 'DeepSeek Assistant',
   '服务器监控': 'Server Monitor', '关于 NavMini': 'About NavMini', '未连接': 'Not connected',

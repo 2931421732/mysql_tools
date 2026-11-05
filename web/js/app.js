@@ -778,6 +778,19 @@ function renderWelcome(tab) {
 /* query tab                                                          */
 /* ------------------------------------------------------------------ */
 
+function activeSQLContext() {
+  const tab = activeTab();
+  if (!tab || tab.kind !== 'query') return {};
+  let selectedSQL = '';
+  try { selectedSQL = tab.editor?.getSelection?.().text || ''; } catch { /* editor not ready */ }
+  return {
+    sql: tab.editor?.value || tab.sql || '',
+    selectedSQL,
+    error: tab.error || '',
+    database: tab.db || '',
+  };
+}
+
 function openAIAssistantFromActive() {
   const tab = activeTab();
   const connId = tab?.connId || S.connections[0]?.id;
@@ -787,6 +800,7 @@ function openAIAssistantFromActive() {
     connId,
     db: tab?.db || conn?.database || '',
     selectedTable: tab?.kind === 'table' ? tab.table : '',
+    getSQLContext: activeSQLContext,
   });
 }
 
@@ -795,7 +809,7 @@ function askAIForRow(tab, row) {
   if (!r || !r.rows[row]) return;
   const obj = {};
   for (let i = 0; i < r.columns.length; i++) obj[r.columns[i].name] = r.rows[row][i];
-  openAssistant({ connId: tab.connId, db: tab.db, selectedTable: tab.table, selectedRow: obj });
+  openAssistant({ connId: tab.connId, db: tab.db, selectedTable: tab.table, selectedRow: obj, getSQLContext: activeSQLContext });
 }
 
 function newQueryFromContext() {

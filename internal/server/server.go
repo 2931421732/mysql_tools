@@ -67,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 		"/api/ai/detect":                 s.handleAIDetect,
 		"/api/ai/attachment":             s.handleAIAttachment,
 		"/api/ai/chat":                   s.handleAIChat,
+		"/api/ai/context":                s.handleAIContext,
 		"/api/ai/execute":                s.handleAIExecute,
 		"/api/processlist":               s.handleProcesslist,
 		"/api/processlist/kill":          s.handleKill,

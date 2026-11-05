@@ -14,6 +14,8 @@ export async function openAssistant(ctx = {}) {
     if (ctx.connId && ctx.connId !== live.connId) { closeAssistant(); }
     else {
       if (ctx.db) live.ctx.db = ctx.db;
+      if (ctx.getSQLContext) live.ctx.getSQLContext = ctx.getSQLContext;
+      if (ctx.mode) setAssistantMode(ctx.mode);
       if (ctx.selectedRow) { live.ctx.selectedRow = ctx.selectedRow; live.ctx.selectedTable = ctx.selectedTable; renderRowContext(); }
       live.panel.classList.add('visible');
       return;
@@ -24,9 +26,11 @@ export async function openAssistant(ctx = {}) {
   live = {
     panel, ctx, connId: ctx.connId, sessionId: null, state: null, databases: [],
     selectedDbs: new Set(), history: [], attachments: [], busy: false, last: null,
+    mode: ctx.mode === 'diagnose' ? 'diagnose' : 'query', contextTokens: null,
   };
   document.body.append(panel);
   renderRowContext();
+  setAssistantMode(live.mode);
   requestAnimationFrame(() => panel.classList.add('visible'));
   await bootstrap();
 }
@@ -50,6 +54,9 @@ function buildPanel(ctx) {
     settingsBtn, closeBtn,
   );
 
+  const modeQuery = h('button', { class: 'ai-mode-btn' + ((ctx.mode || 'query') === 'query' ? ' active' : '') }, '查数据');
+  const modeDiagnose = h('button', { class: 'ai-mode-btn' + (ctx.mode === 'diagnose' ? ' active' : '') }, '排障');
+  const modeBar = h('div', { class: 'ai-modes' }, modeQuery, modeDiagnose);
   const scopeBox = h('div', { class: 'ai-scope' });
   const notice = h('div', { class: 'ai-notice hidden' });
   const messages = h('div', { class: 'ai-messages' });
@@ -62,15 +69,20 @@ function buildPanel(ctx) {
   const attachBtn = h('label', { class: 'btn ghost sm icon ai-attach', title: 'Attach file', html: icon('paperclip') }, attachInput);
   const attachmentsBox = h('div', { class: 'ai-attachments hidden' });
   const sendBtn = h('button', { class: 'btn primary sm', html: icon('play') + '<span>发送</span>' });
+  const contextBtn = h('button', { class: 'btn ghost sm icon', title: '查看上下文与预算', html: icon('info') });
+  const budgetBadge = h('span', { class: 'faint ai-budget' }, '');
   const composer = h('div', { class: 'ai-compose' }, rowCtx, attachmentsBox, input,
     h('div', { class: 'ai-compose-bar' },
-      attachBtn,
+      attachBtn, contextBtn,
       h('span', { class: 'faint ai-attach-hint' }, 'xlsx / csv / 日志 / 源代码 / 压缩包'),
-      h('span', { class: 'flex-1' }), h('span', { class: 'faint' }, '⌘↩ 发送'), sendBtn));
-  panel.append(head, notice, scopeBox, messages, composer);
-  panel._ui = { modeBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn, attachInput, attachBtn, attachmentsBox };
+      h('span', { class: 'flex-1' }), budgetBadge, h('span', { class: 'faint' }, '⌘↩ 发送'), sendBtn));
+  panel.append(head, modeBar, notice, scopeBox, messages, composer);
+  panel._ui = { modeBadge, modeBar, modeQuery, modeDiagnose, contextBtn, budgetBadge, scopeBox, notice, messages, input, sendBtn, rowCtx, settingsBtn, closeBtn, attachInput, attachBtn, attachmentsBox };
   closeBtn.addEventListener('click', closeAssistant);
   settingsBtn.addEventListener('click', () => (window.__navmini?.openSettings?.('ai') || openAISettings()));
+  modeQuery.addEventListener('click', () => setAssistantMode('query'));
+  modeDiagnose.addEventListener('click', () => setAssistantMode('diagnose'));
+  contextBtn.addEventListener('click', previewContext);
   sendBtn.addEventListener('click', () => sendMessage());
   attachInput.addEventListener('change', () => {
     const file = attachInput.files && attachInput.files[0];
@@ -249,11 +261,16 @@ function renderMessages() {
   const box = live.panel._ui.messages;
   box.innerHTML = '';
   if (!live.history.length) {
+    const diag = live.mode === 'diagnose';
     box.append(h('div', { class: 'ai-empty' },
-      h('div', { class: 'ai-empty-icon', html: icon('sparkles') }),
-      h('h3', {}, '让 DeepSeek 帮你写 SQL'),
-      h('p', {}, '描述需求，助手会结合表结构、主键和索引生成一条 SQL；默认只生成，不会自动执行。'),
-      h('p', { class: 'faint' }, '例：找出过去 30 天订单金额前 10 的客户，按金额倒序')));
+      h('div', { class: 'ai-empty-icon', html: icon(diag ? 'alert' : 'sparkles') }),
+      h('h3', {}, diag ? '分析错误、日志和源码' : '让 AI 帮你写 SQL'),
+      h('p', {}, diag
+        ? '贴入错误信息，或附加服务日志/源码；助手会结合当前 SQL、错误和表结构定位问题。'
+        : '描述需求，助手会结合表结构、主键和索引生成一条 SQL；默认只生成，不会自动执行。'),
+      h('p', { class: 'faint' }, diag
+        ? '例：这个 1064 错误是什么原因？/ 这段日志为什么连接超时？'
+        : '例：找出过去 30 天订单金额前 10 的客户，按金额倒序')));
     return;
   }
   for (const msg of live.history) {
@@ -309,6 +326,69 @@ function renderSQLCard(r) {
   return card;
 }
 
+function setAssistantMode(mode) {
+  if (!live) return;
+  live.mode = mode === 'diagnose' ? 'diagnose' : 'query';
+  const ui = live.panel._ui;
+  ui.modeQuery.classList.toggle('active', live.mode === 'query');
+  ui.modeDiagnose.classList.toggle('active', live.mode === 'diagnose');
+  ui.input.placeholder = live.mode === 'diagnose'
+    ? '描述错误、贴日志，或附加源码/压缩包，例如：为什么连接超时？'
+    : '描述你想查或改什么，例如：按国家统计客户数与余额，按余额倒序';
+  ui.budgetBadge.textContent = '';
+  live.contextTokens = null;
+  renderMessages();
+}
+
+function currentSQLContext() {
+  try { return (live && live.ctx.getSQLContext && live.ctx.getSQLContext()) || {}; }
+  catch { return {}; }
+}
+
+function buildChatPayload(includeMessages = true) {
+  const q = currentSQLContext();
+  const payload = {
+    session: live.sessionId || '',
+    mode: live.mode,
+    databases: [...live.selectedDbs],
+    currentDatabase: firstDb(),
+    messages: includeMessages ? live.history.map((m) => ({ role: m.role, content: m.content })) : [],
+    attachments: (live.attachments || []).map((a) => a.id),
+    editorSQL: q.sql || '',
+    selectedSQL: q.selectedSQL || '',
+    lastError: q.error || '',
+  };
+  if (live.ctx.selectedRow) {
+    payload.selectedRow = live.ctx.selectedRow;
+    payload.selectedTable = live.ctx.selectedTable || '';
+  }
+  return payload;
+}
+
+async function previewContext() {
+  if (!live) return;
+  try {
+    const res = await apiPost('/api/ai/context', buildChatPayload(true));
+    live.contextTokens = res.estimatedTokens;
+    live.panel._ui.budgetBadge.textContent = `上下文 ≈ ${formatNumber(res.estimatedTokens)} tokens`;
+    const sections = h('div', { class: 'ai-context-sections' });
+    for (const s of res.sections || []) {
+      sections.append(h('div', { class: 'ai-context-row' },
+        h('span', {}, s.name), h('span', { class: 'faint' }, `${formatNumber(s.chars)} 字符`)));
+    }
+    const body = h('div', {},
+      h('div', { class: 'ai-context-summary' },
+        h('strong', {}, `约 ${formatNumber(res.estimatedTokens)} tokens`),
+        h('span', {}, `· ${formatNumber(res.chars)} 字符 · ${res.mode === 'diagnose' ? '排障模式' : '查询模式'}`),
+        h('span', { class: 'faint' }, res.schemaTables ? ` · Schema ${res.schemaTables} 张表` : '')),
+      sections,
+      h('p', { class: 'hint' }, '以下为即将发送给模型的系统上下文预览；日志/源码/附件均按不可信数据处理。'),
+      h('pre', { class: 'ai-context-preview' }, res.preview || ''));
+    const m = openModal({ title: '上下文预算与预览', body, wide: true });
+    m.footer.append(h('span', { class: 'spacer' }), h('button', { class: 'btn primary', onClick: () => m.close() }, '关闭'));
+  } catch (err) { toast(err.message, 'err', 6000); }
+}
+
 function firstDb() {
   return [...live.selectedDbs][0] || live.ctx.db || '';
 }
@@ -319,8 +399,13 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
   if (!live.state?.enabled || !live.state?.hasKey) { toast('请先配置并启用 AI 助手', 'warn', 3000); return; }
-  if (!live.selectedDbs.size && !(live.attachments || []).length) {
-    toast('请选择数据库，或先上传日志/源代码附件', 'warn', 3500);
+  const qctx = currentSQLContext();
+  if (live.mode === 'query' && !live.selectedDbs.size && !(live.attachments || []).length) {
+    toast('查询模式请选择数据库，或先上传附件', 'warn', 3500);
+    return;
+  }
+  if (live.mode === 'diagnose' && !live.selectedDbs.size && !(live.attachments || []).length && !qctx.sql && !qctx.error) {
+    toast('排障模式请描述错误，或附加日志/源码', 'warn', 3500);
     return;
   }
   if (live.selectedDbs.size) await ensureSession();
@@ -333,18 +418,12 @@ async function sendMessage() {
   live.panel._ui.messages.append(loading);
   live.panel._ui.messages.scrollTop = 1e9;
   try {
-    const payload = {
-      session: live.sessionId || '',
-      databases: [...live.selectedDbs],
-      currentDatabase: firstDb(),
-      messages: live.history.map((m) => ({ role: m.role, content: m.content })),
-      attachments: (live.attachments || []).map((a) => a.id),
-    };
-    if (live.ctx.selectedRow) {
-      payload.selectedRow = live.ctx.selectedRow;
-      payload.selectedTable = live.ctx.selectedTable || '';
-    }
+    const payload = buildChatPayload(true);
     const res = await apiPost('/api/ai/chat', payload);
+    if (res.contextTokens) {
+      live.contextTokens = res.contextTokens;
+      live.panel._ui.budgetBadge.textContent = `上下文 ≈ ${formatNumber(res.contextTokens)} tokens`;
+    }
     if (!live) return;
     const msg = {
       role: 'assistant',

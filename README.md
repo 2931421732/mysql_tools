@@ -63,6 +63,9 @@ Why Go:
 
 ### AI assistant
 
+- **Two modes**: **Query** (schema → SQL) and **Diagnose** (SQL errors, logs, source code → root cause). The mode changes the system prompt and can work without a database in diagnose mode.
+- **Current SQL context**: the active query tab's SQL, selected SQL, and latest execution error are sent automatically; no copy/paste needed.
+- **Context preview**: the info button shows estimated tokens, section sizes (schema, SQL/error, attachments, history) and the exact system context before sending.
 - **Providers**: DeepSeek (OpenAI-compatible), Claude Code (Anthropic Messages), and Codex (OpenAI Responses).
 - **Local config import**: choose `引用本地配置` to read Claude Code (`~/.claude/settings.json`) or Codex (`~/.codex/config.toml` + `auth.json`) in place. Files are read-only and never modified; API keys never reach the browser.
 - **Manual mode**: configure Base URL / API key yourself; the model dropdown is populated from the endpoint's `/models` response (with a refresh button). The API key is stored server-side with AES-256-GCM; the frontend only sees "configured".

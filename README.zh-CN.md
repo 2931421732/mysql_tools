@@ -79,6 +79,11 @@ NavMini 是一个本地单机 MySQL 客户端：连接管理（含 SSH 隧道 / 
 
 ### AI 助手
 
+- **两种模式**：**查数据**（Schema → SQL）和 **排障**（SQL 错误、日志、源码 → 根因）。
+  不同模式使用不同系统提示；排障模式不选数据库也能分析。
+- **当前 SQL 上下文**：自动带上当前查询页的 SQL、选中 SQL 和最近一次执行错误，无需复制粘贴。
+- **上下文预览**：点信息按钮可查看预计 token、Schema/SQL/错误/附件/历史各段字符数，
+  以及即将发送的系统上下文。
 - 支持三种 Provider：**DeepSeek**（OpenAI 兼容）、**Claude Code**（Anthropic Messages）、
   **Codex**（OpenAI Responses）。
 - 选择「引用本地配置」可只读引用 Claude Code（`~/.claude/settings.json`）或
