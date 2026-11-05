@@ -141,7 +141,7 @@ function connState(id) {
   if (!S.conns.has(id)) {
     S.conns.set(id, {
       sessionId: null, connected: false, server: null, databases: null, objects: new Map(),
-      openDbs: new Set(), expanded: false, loading: false, opening: null, error: null,
+      openDbs: new Set(), expanded: false, loading: false, opening: null, error: null, loadingObjects: new Set(),
     });
   }
   return S.conns.get(id);
@@ -496,20 +496,19 @@ function closeTableDrawer() {
 async function openTableDrawer(connId, dbName) {
   S.tableDrawer = { connId, dbName, query: '' };
   const cs = connState(connId);
-  if (!cs.openDbs.has(dbName)) {
-    cs.openDbs.add(dbName);
-    cs.expanded = true;
-    renderTree();
-  }
+  // Do not expand this database in the left tree. With thousands of tables a
+  // full tree re-render would block the UI before the drawer even appears.
   renderTableDrawer();
-  if (!cs.objects.has(dbName)) {
-    try {
-      const sid = await ensureTreeSession(connId);
-      const objects = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(dbName)}`);
-      cs.objects.set(dbName, objects);
-    } catch (err) {
-      toast(`加载 ${dbName} 失败：${err.message}`, 'err', 5000);
-    }
+  if (cs.objects.has(dbName) || cs.loadingObjects.has(dbName)) return;
+  cs.loadingObjects.add(dbName);
+  try {
+    const sid = await ensureTreeSession(connId);
+    const objects = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(dbName)}`);
+    cs.objects.set(dbName, objects);
+  } catch (err) {
+    toast(`加载 ${dbName} 失败：${err.message}`, 'err', 5000);
+  } finally {
+    cs.loadingObjects.delete(dbName);
     renderTableDrawer();
   }
 }
@@ -531,12 +530,14 @@ function renderTableDrawer() {
       cs.objects.delete(state.dbName);
       for (const key of [...S.tableDetails.keys()]) if (key.startsWith(`${state.connId}|${state.dbName}|`)) S.tableDetails.delete(key);
       renderTableDrawer();
+      if (cs.loadingObjects.has(state.dbName)) return;
+      cs.loadingObjects.add(state.dbName);
       try {
         const sid = await ensureTreeSession(state.connId);
         const next = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(state.dbName)}`);
         cs.objects.set(state.dbName, next);
       } catch (err) { toast(err.message, 'err', 5000); }
-      renderTree(); renderTableDrawer();
+      finally { cs.loadingObjects.delete(state.dbName); renderTableDrawer(); }
     } }),
     h('button', { class: 'btn ghost sm icon', title: '关闭', html: icon('x'), onClick: closeTableDrawer }),
   ));
