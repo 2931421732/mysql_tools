@@ -24,7 +24,7 @@
       <button class="btn ghost icon" id="btn-new-connection" title="新建连接 (⌘N)"></button>
       <div class="search-box">
         <span class="search-icon"></span>
-        <input id="tree-search" type="search" placeholder="搜索连接、库、表" autocomplete="off" spellcheck="false">
+        <input id="tree-search" type="search" placeholder="搜索连接源" autocomplete="off" spellcheck="false">
       </div>
       <button class="btn ghost icon" id="btn-refresh-tree" title="刷新连接树"></button>
     </div>
@@ -55,6 +55,7 @@
       </div>
     </header>
     <section id="workspace"></section>
+    <aside id="table-drawer" class="table-drawer hidden"></aside>
     <footer id="statusbar">
       <span id="status-conn" class="status-item">未连接</span>
       <span id="status-db" class="status-item muted"></span>

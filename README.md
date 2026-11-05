@@ -48,7 +48,7 @@ Why Go:
 ## Features
 
 - **Connection management**: groups, colors, notes, SSL mode, timeouts, SSH tunnels (password / private key / ssh-agent), test connection, multi-select with select-all and bulk delete.
-- **Object tree**: databases, tables, views, row counts and sizes, search, lazy loading, cached schemas, right-click refresh for a database or table, export and quick backup.
+- **Object tree**: connection-only search; click a database to open a right-side table browser with its own table/view search, row counts, and one-click open; lazy loading, cached schemas, right-click refresh for a database or table, export and quick backup.
 - **SQL workbench**: multiple tabs, syntax highlighting, table/column autocomplete, `⌘↩` to run, `⇧⌘↩` to run the selection, EXPLAIN, stop (`KILL QUERY` without dropping the session), multiple statements and result sets, query history.
 - **Data browsing**: pagination, a compact **WHERE / ORDER BY** block in the table toolbar (no top filter bar, data and status stay visible) with manually typed fields, AND/OR conditions (`IN` / `BETWEEN` / NULL) and sorting; drag a column header to add a condition. **Details** bottom pane for full long text/JSON, column `COMMENT` tooltips, and a timestamp display toggle that never changes the underlying value (edits still send the raw value). A one-line effective SQL summary can be copied directly. Generate INSERT/UPDATE/DELETE SQL from selected rows, primary-key-based safe editing, insert/delete rows, CSV and XLSX export.
 - **Database export**: right-click a database → choose structure only, structure + all data, or custom (all structure + data for selected tables).

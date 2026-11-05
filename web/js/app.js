@@ -328,15 +328,7 @@ function renderTree() {
   for (const conn of S.connections) {
     const cs = connState(conn.id);
     const connHit = !q || matches(conn.name, q) || matches(conn.host, q) || matches(conn.user, q) || matches(conn.group, q);
-    let childHit = false;
-    if (q && cs.databases) {
-      for (const db of cs.databases) {
-        if (matches(db.name, q)) { childHit = true; break; }
-        const objs = cs.objects.get(db.name);
-        if (objs && objs.some((o) => matches(o.name, q))) { childHit = true; break; }
-      }
-    }
-    if (!connHit && !childHit) continue;
+    if (!connHit) continue;
     shown++;
     tree.append(renderConnNode(conn, cs, q, connHit));
   }
@@ -401,8 +393,7 @@ function renderConnNode(conn, cs, q, connHit) {
       node.append(h('div', { class: 'tree-empty', style: { color: 'var(--red)' } }, cs.error));
     } else if (cs.databases) {
       for (const db of cs.databases) {
-        if (q && !connHit && !matches(db.name, q) && !(cs.objects.get(db.name) || []).some((o) => matches(o.name, q))) continue;
-        node.append(renderDbNode(conn, cs, db, q));
+        node.append(renderDbNode(conn, cs, db));
       }
       if (!cs.databases.length) node.append(h('div', { class: 'tree-empty' }, '没有数据库'));
     }
@@ -410,9 +401,9 @@ function renderConnNode(conn, cs, q, connHit) {
   return node;
 }
 
-function renderDbNode(conn, cs, db, q) {
+function renderDbNode(conn, cs, db) {
   const wrap = h('div', { class: 'tree-node' });
-  const open = cs.openDbs.has(db.name) || (q && matches(db.name, q));
+  const open = cs.openDbs.has(db.name);
   const objects = cs.objects.get(db.name);
   const row = h('div', { class: 'node-row', style: { '--depth': 1 }, title: db.collation || db.name },
     h('span', { class: 'node-caret' + (open ? ' open' : ''), html: icon('chevron-right') }),
@@ -420,7 +411,7 @@ function renderDbNode(conn, cs, db, q) {
     h('span', { class: 'node-name' }, db.name),
     h('span', { class: 'node-meta' }, db.tables ? formatNumber(db.tables) : ''),
   );
-  row.addEventListener('click', () => toggleDb(conn.id, db.name));
+  row.addEventListener('click', () => openTableDrawer(conn.id, db.name));
   row.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
@@ -433,8 +424,8 @@ function renderDbNode(conn, cs, db, q) {
   wrap.append(row);
 
   if (open && objects) {
-    const tables = objects.filter((o) => o.type !== 'VIEW' && (!q || matches(o.name, q) || matches(db.name, q)));
-    const views = objects.filter((o) => o.type === 'VIEW' && (!q || matches(o.name, q) || matches(db.name, q)));
+    const tables = objects.filter((o) => o.type !== 'VIEW');
+    const views = objects.filter((o) => o.type === 'VIEW');
     if (tables.length) {
       wrap.append(h('div', { class: 'tree-section', style: { '--depth': 2 } }, `表 · ${tables.length}`));
       for (const t of tables) wrap.append(renderTableNode(conn, db, t));
@@ -497,6 +488,99 @@ async function toggleConn(connId) {
   }
 }
 
+function closeTableDrawer() {
+  S.tableDrawer = null;
+  document.querySelector('#table-drawer')?.classList.add('hidden');
+}
+
+async function openTableDrawer(connId, dbName) {
+  S.tableDrawer = { connId, dbName, query: '' };
+  const cs = connState(connId);
+  if (!cs.openDbs.has(dbName)) {
+    cs.openDbs.add(dbName);
+    cs.expanded = true;
+    renderTree();
+  }
+  renderTableDrawer();
+  if (!cs.objects.has(dbName)) {
+    try {
+      const sid = await ensureTreeSession(connId);
+      const objects = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(dbName)}`);
+      cs.objects.set(dbName, objects);
+    } catch (err) {
+      toast(`加载 ${dbName} 失败：${err.message}`, 'err', 5000);
+    }
+    renderTableDrawer();
+  }
+}
+
+function renderTableDrawer() {
+  const el = document.querySelector('#table-drawer');
+  if (!el) return;
+  const state = S.tableDrawer;
+  if (!state) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const conn = connById(state.connId);
+  const cs = connState(state.connId);
+  const objects = cs.objects.get(state.dbName);
+  el.innerHTML = '';
+  el.append(h('div', { class: 'drawer-head' },
+    h('span', { class: 'drawer-icon', html: icon('database') }),
+    h('div', { class: 'drawer-title' }, h('strong', {}, state.dbName), h('span', {}, conn ? conn.name : '')),
+    h('button', { class: 'btn ghost sm icon', title: '刷新表', html: icon('refresh'), onClick: async () => {
+      cs.objects.delete(state.dbName);
+      for (const key of [...S.tableDetails.keys()]) if (key.startsWith(`${state.connId}|${state.dbName}|`)) S.tableDetails.delete(key);
+      renderTableDrawer();
+      try {
+        const sid = await ensureTreeSession(state.connId);
+        const next = await apiGet(`/api/objects?session=${encodeURIComponent(sid)}&db=${encodeURIComponent(state.dbName)}`);
+        cs.objects.set(state.dbName, next);
+      } catch (err) { toast(err.message, 'err', 5000); }
+      renderTree(); renderTableDrawer();
+    } }),
+    h('button', { class: 'btn ghost sm icon', title: '关闭', html: icon('x'), onClick: closeTableDrawer }),
+  ));
+  const search = h('input', { class: 'input', placeholder: '搜索表 / 视图', value: state.query || '', spellcheck: 'false' });
+  const list = h('div', { class: 'drawer-list' });
+  const paint = () => {
+    list.innerHTML = '';
+    if (!objects) { list.append(h('div', { class: 'drawer-empty' }, h('span', { class: 'spinner' }), '加载对象…')); return; }
+    const q = (state.query || '').toLowerCase();
+    const match = (o) => !q || o.name.toLowerCase().includes(q);
+    const tables = objects.filter((o) => o.type !== 'VIEW' && match(o));
+    const views = objects.filter((o) => o.type === 'VIEW' && match(o));
+    const active = activeTab();
+    if (!tables.length && !views.length) {
+      list.append(h('div', { class: 'drawer-empty' }, q ? '没有匹配的表' : '没有对象'));
+      return;
+    }
+    if (tables.length) {
+      list.append(h('div', { class: 'drawer-section' }, `表 · ${tables.length}`));
+      for (const t of tables) {
+        const selected = active?.kind === 'table' && active.db === state.dbName && active.table === t.name;
+        list.append(h('button', { class: 'drawer-item' + (selected ? ' selected' : ''), onClick: () => openTable(state.connId, state.dbName, t.name) },
+          h('span', { class: 'drawer-item-icon', html: icon('table') }),
+          h('span', { class: 'drawer-item-name' }, t.name),
+          h('span', { class: 'drawer-item-meta' }, t.rows ? formatNumber(t.rows) : '')));
+      }
+    }
+    if (views.length) {
+      list.append(h('div', { class: 'drawer-section' }, `视图 · ${views.length}`));
+      for (const v of views) {
+        list.append(h('button', { class: 'drawer-item', onClick: () => openTable(state.connId, state.dbName, v.name) },
+          h('span', { class: 'drawer-item-icon', html: icon('view') }),
+          h('span', { class: 'drawer-item-name' }, v.name)));
+      }
+    }
+  };
+  search.addEventListener('input', () => { state.query = search.value; paint(); });
+  search.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeTableDrawer(); });
+  const searchBtn = h('button', { class: 'btn ghost sm icon', title: '搜索表', html: icon('search') });
+  searchBtn.addEventListener('click', () => search.focus());
+  el.append(h('div', { class: 'drawer-search' }, h('span', { class: 'search-icon' }), search, searchBtn), list);
+  paint();
+}
+
 async function toggleDb(connId, dbName, forceLoad = false) {
   const cs = connState(connId);
   if (cs.openDbs.has(dbName)) {
@@ -531,6 +615,7 @@ async function deleteConnection(conn) {
     const cs = S.conns.get(conn.id);
     if (cs?.sessionId) apiPost('/api/session/close', { session: cs.sessionId }).catch(() => {});
     S.conns.delete(conn.id);
+    if (S.tableDrawer?.connId === conn.id) closeTableDrawer();
     await reloadConnections();
     renderTree();
     toast('连接已删除', 'ok');
