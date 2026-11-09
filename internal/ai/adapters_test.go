@@ -22,6 +22,10 @@ func TestAnthropicChat(t *testing.T) {
 			http.Error(w, "bad body", http.StatusBadRequest)
 			return
 		}
+		if _, ok := body["temperature"]; ok {
+			http.Error(w, "temperature must be omitted", http.StatusBadRequest)
+			return
+		}
 		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":3,"output_tokens":2}}`))
 	}))
 	defer srv.Close()

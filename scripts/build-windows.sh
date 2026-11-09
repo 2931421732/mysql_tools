@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION="${VERSION:-0.7.0}"
+VERSION="${VERSION:-0.7.1}"
 export GOCACHE="${GOCACHE:-$PWD/.build/go-cache}"
 export GOFLAGS="${GOFLAGS:--mod=vendor}"
 export CGO_ENABLED=0

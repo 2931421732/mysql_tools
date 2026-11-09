@@ -75,6 +75,10 @@ func anthropicMessagesURL(base string) string {
 }
 
 func (c *AnthropicClient) Chat(ctx context.Context, messages []Message, temperature float64, maxTokens int) (string, Usage, error) {
+	// Some Claude models (e.g. Sonnet 5.5 behind LiteLLM) only accept
+	// temperature=1 and reject any other value. Temperature is optional in the
+	// Anthropic Messages API, so omit it entirely and use the endpoint default.
+	_ = temperature
 	var system []string
 	msgs := make([]anthropicMessage, 0, len(messages))
 	for _, m := range messages {
@@ -94,7 +98,7 @@ func (c *AnthropicClient) Chat(ctx context.Context, messages []Message, temperat
 		maxTokens = 1800
 	}
 	reqBody := anthropicRequest{
-		Model: c.Profile.Model, MaxTokens: maxTokens, Temperature: temperature,
+		Model: c.Profile.Model, MaxTokens: maxTokens,
 		System: strings.Join(system, "\n\n"), Messages: msgs,
 	}
 	payload, err := json.Marshal(reqBody)
